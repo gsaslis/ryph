@@ -1,6 +1,17 @@
-# Ryph
+<h1 align="center">
+  <a href="https://ryph.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/ryph-logo-dark.svg">
+      <img src="docs/assets/readme/ryph-logo-light.svg" alt="Ryph" width="240">
+    </picture>
+  </a>
+</h1>
 
-[Homepage](https://ryph.ai) | [Docs](https://ryph.ai/docs/) | [Getting started](https://ryph.ai/docs/getting-started/)
+<p align="center">
+  <a href="https://ryph.ai">Homepage</a> ·
+  <a href="https://ryph.ai/docs/">Docs</a> ·
+  <a href="https://ryph.ai/docs/getting-started/">Getting started</a>
+</p>
 
 > [!NOTE]
 > Ryph is under active and heavy development. Breaking changes are possible before v1; see
@@ -34,7 +45,12 @@ being merged, and starts watching telemetry for the deploy landing.
 
 Eventually, the alert resolves, the bot reports all green, and closes out.
 
-[Learn how to set up a self-hosted incident response bot for your team](https://ryph.ai/docs/incident-response/)
+<a href="https://ryph.ai/docs/incident-response/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-incident-response-dark.png">
+    <img src="docs/assets/readme/card-incident-response-light.png" alt="Guide: set up incident response. Learn how to set up a self-hosted incident response bot for your team." width="100%">
+  </picture>
+</a>
 
 ## Give your teammates a secure helper bot that can reason from code, and ship fixes
 
@@ -56,7 +72,12 @@ reports back in the chat with a screenshot of the fixed UI. Ryph's
 [forge safeguards](https://ryph.ai/docs/secure-forge-interactions/) prevent the bot from
 accidentally making a bad push, or even sidestepping a code review.
 
-[Learn how to give your teammates a secure, self-hosted agent](https://ryph.ai/docs/team-agent/)
+<a href="https://ryph.ai/docs/team-agent/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-team-agent-dark.png">
+    <img src="docs/assets/readme/card-team-agent-light.png" alt="Guide: give your team a secure agent. Learn how to give your teammates a secure, self-hosted agent." width="100%">
+  </picture>
+</a>
 
 ---
 
