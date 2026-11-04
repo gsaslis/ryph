@@ -1,0 +1,5 @@
+interface:
+  display_name: "Checks"
+  short_description: "Set up and run the checks a change must pass before it merges."
+  icon_small: "./assets/checks.svg"
+  icon_large: "./assets/checks.svg"

@@ -1,0 +1,13 @@
+thumbnail_seccomp.json is derived from Microsoft Playwright v1.63.0:
+https://github.com/microsoft/playwright/blob/v1.63.0/utils/docker/seccomp_profile.json
+Copyright (c) Microsoft Corporation. Licensed under Apache-2.0; see thumbnail_seccomp.LICENSE.
+
+The upstream Docker-derived profile permits clone, setns and unshare so non-root Chromium can
+create its sandbox without CAP_SYS_ADMIN. Ryph adds an explicit clone3 -> ENOSYS (errno 38)
+rule so modern glibc falls back to the allowed clone call rather than failing with EPERM.
+Ryph also permits chroot without the outer CAP_SYS_CHROOT condition: Chromium's
+sandbox/linux/services/credentials.cc ChrootToSafeEmptyDir uses it inside a fresh user
+namespace. The kernel still requires the capability inside that namespace; the outer
+container drops ALL capabilities. Chromium's namespace sandbox uses USER/PID/NET namespaces,
+not a mount namespace; mount remains capability-gated (and therefore denied here).
+Formatting is normalized to the repository style. The policy remains deny-by-default.

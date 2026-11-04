@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-460.6 -1243.3 1560.2 1560.2" width="32"
+  height="32">
+  <title>Ryph</title>
+  <defs>
+    <linearGradient id="ryph-sweep" gradientUnits="userSpaceOnUse" x1="-445.3"
+      y1="-463.2" x2="1084.3" y2="-463.2">
+      <stop offset="0" stop-color="#8cdffc" />
+      <stop offset=".55" stop-color="#c0bfff" />
+      <stop offset="1" stop-color="#fdbde7" />
+    </linearGradient>
+    <radialGradient id="ryph-glow" gradientUnits="userSpaceOnUse" cx="51.5" cy="-196" r="727">
+      <stop offset="0" stop-color="#94f2eb" stop-opacity=".9" />
+      <stop offset=".5" stop-color="#ffe2a3" stop-opacity=".35" />
+      <stop offset="1" stop-color="#ffe2a3" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <circle cx="319.5" cy="-463.2" r="764.8" fill="url(#ryph-sweep)" />
+  <circle cx="319.5" cy="-463.2" r="764.8" fill="url(#ryph-glow)" />
+  <path
+    d="M42 0H228.9V-252.7H352.9Q386.2 -252.7 403.8 -244.7Q418.2 -238 425 -224.8Q433.4 -208.4 435 -180.4L447.2 0H630.8L621.8 -183.2Q619.7 -239.5 597.6 -283.7Q582.3 -314.3 558.3 -337.2Q580 -360.7 595 -389.7Q618 -434.1 618 -486.4Q618 -552.4 588.4 -605.7Q558.3 -660 498.1 -690.9Q439.5 -721 352 -721H42ZM228.9 -413.9V-558.9H343.4Q391.6 -558.9 410.5 -540.3Q429.2 -521.9 429.2 -486.4Q429.2 -451.7 410.3 -432.8Q391.4 -413.9 343.4 -413.9H228.9Z"
+    transform="translate(-16.9 -102.7)" fill="#000000" />
+</svg>

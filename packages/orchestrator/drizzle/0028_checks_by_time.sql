@@ -1,0 +1,1 @@
+CREATE INDEX "check_suites_by_time" ON "check_suites" USING btree ("created_at","id");

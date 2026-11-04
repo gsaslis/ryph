@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789292876797,
+      "tag": "0000_sticky_xavin",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791976038458,
+      "tag": "0001_webhook_scopes",
+      "breakpoints": true
+    }
+  ]
+}

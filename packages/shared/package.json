@@ -1,0 +1,24 @@
+{
+  "name": "@ryph/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./env": "./src/env.ts",
+    "./http": "./src/http.ts",
+    "./lines": "./src/lines.ts",
+    "./markdown": "./src/markdown.ts",
+    "./mcp": "./src/mcp.ts",
+    "./net": "./src/net.ts",
+    "./refs": "./src/refs.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@std/assert": "npm:@jsr/std__assert@1"
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE "connected_repos" ADD COLUMN "allow_fork_pushes" boolean DEFAULT false NOT NULL;

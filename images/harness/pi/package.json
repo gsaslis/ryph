@@ -1,0 +1,8 @@
+{
+  "name": "@ryph/harness-pi",
+  "private": true,
+  "description": "pi as the harness layer installs it, with package-lock.json pinning its whole tree (pi stopped shipping a shrinkwrap in 1.0.1).",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0"
+  }
+}

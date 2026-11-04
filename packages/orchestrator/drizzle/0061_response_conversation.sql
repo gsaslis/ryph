@@ -1,0 +1,1 @@
+ALTER TABLE "responses" ADD COLUMN "conversation" text DEFAULT 'per-response' NOT NULL;

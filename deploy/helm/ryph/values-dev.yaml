@@ -1,0 +1,114 @@
+# A laptop cluster (kind 0.24+, k3d; not Docker Desktop's built-in Kubernetes, which enforces no
+# NetworkPolicy, README.md "Requirements"): state in the cluster, and fixed dev placeholders as
+# every secret. They are public — committed to this repository — so every service refuses to boot
+# with one unless RYPH_ALLOW_DEV_SECRETS=1, which `secrets.allowDevSecrets` sets. Nothing here is a
+# credential; never use this file for anything but a laptop.
+#
+#   helm install ryph deploy/helm/ryph -n ryph-system --create-namespace -f deploy/helm/ryph/values-dev.yaml
+#   kubectl -n ryph port-forward svc/app 3000
+#
+# On kind, add values-kind.yaml for artifact thumbnails (README.md, "Quick start on kind").
+#
+# Images come from the published registry at the chart's appVersion. To run images you built
+# yourself (`docker build -f images/<svc>/Dockerfile -t ryph-<svc>:dev .`, then
+# `kind load docker-image ryph-<svc>:dev --name <cluster>`), uncomment:
+#
+# image:
+#   registry: ""
+#   tag: dev
+#   pullPolicy: Never
+
+# Bundled Postgres and SeaweedFS, in `ryph-state`.
+devState:
+  enabled: true
+  postgres:
+    password: dev-postgres-password
+  objects:
+    accessKey: ryph-dev-access-key
+    secretKey: ryph-dev-secret-key
+    signingKey: ryph-dev-objects-signing-key
+
+secrets:
+  allowDevSecrets: true
+  # Fixed placeholders, so a laptop cluster's values are the same on every install. Leave them all
+  # empty to have the chart generate real ones instead.
+  internal:
+    RYPH_FORGE_TOKEN: dev-forge-token
+    RYPH_HISTORY_TOKEN: dev-history-token
+    RYPH_MODEL_PROXY_TOKEN: dev-model-proxy-token
+    RYPH_MCP_GATEWAY_TOKEN: dev-mcp-gateway-token
+    RYPH_AUTOMATIONS_TOKEN: dev-automations-token
+    RYPH_MEMORY_TOKEN: dev-memory-token
+    RYPH_CHAT_TOKEN: dev-chat-token
+    RYPH_PLATFORM_TOKEN: dev-platform-token
+    RYPH_MEMORY_GATEWAY_TOKEN: dev-memory-gateway-token
+    RYPH_CHAT_GATEWAY_TOKEN: dev-chat-gateway-token
+    RYPH_WEB_GATEWAY_TOKEN: dev-web-gateway-token
+    # Forge tools: on with Radicle (or a GitHub App, or GitLab), so `radicle.enabled=true` needs
+    # it too.
+    RYPH_FORGE_GATEWAY_TOKEN: dev-forge-gateway-token
+    RYPH_EGRESS_KEY: cafed00dcafed00dcafed00dcafed00dcafed00dcafed00dcafed00dcafed00d
+    RYPH_PROXY_SECRET: dev-proxy-secret
+    RYPH_SECRETS_KEY: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    RYPH_MCP_KEY: cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe
+    RYPH_CHAT_KEY: 0badf00d0badf00d0badf00d0badf00d0badf00d0badf00d0badf00d0badf00d
+    # The previews service refuses anything shorter than 32 characters.
+    RYPH_PREVIEWS_TOKEN: dev-previews-token-0000000000000000
+    RYPH_RADICLE_TOKEN: dev-radicle-token
+  # Nothing to keep on a laptop.
+  keepOnUninstall: false
+
+# Hosted previews, on `preview.localhost`, whose every subdomain a browser resolves to loopback, so
+# a port-forward is the whole front door:
+#
+#   kubectl -n ryph port-forward svc/previews 7490
+#
+# and a preview opens at http://<id>.preview.localhost:7490. The public port must be the one in the
+# URL or the service refuses the Host. Its pods set two socket-buffer sysctls that Kubernetes
+# admits from 1.32 (`capSocketBuffers`): kind 0.26 or newer, or set that to false.
+previews:
+  enabled: true
+  domain: preview.localhost
+  publicPort: "7490"
+
+# The optional Radicle forge. To try it: `radicle.enabled: true`. RAD_PASSPHRASE empty means an
+# UNENCRYPTED key, and with no `radicle.key` the node generates an identity onto its volume — right
+# for a laptop and for nothing else. It reaches the public Radicle network on :8776.
+radicle:
+  enabled: false
+
+priorityClasses:
+  keepOnUninstall: false
+
+# kind and k3d have no gVisor, so environment builds (off unless `environments.enabled`) may run
+# with no RuntimeClass here, on the laptop's own kernel. Never copy this to a shared cluster.
+environments:
+  allowUnsandboxed: true
+
+# Laptop-sized: one replica of everything and small requests, so the whole install schedules in a
+# few GiB (README.md, "Quick start on kind"). Memory limits stay where production has them.
+migrations: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+controlPlane:
+  resources: { requests: { cpu: 50m, memory: 256Mi } }
+  sanitizerResources: { requests: { cpu: 20m, memory: 128Mi } }
+app: { replicas: 1, resources: { requests: { cpu: 50m, memory: 192Mi } } }
+historian: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+memory: { resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 2Gi } } }
+chat: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+web: { resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 2Gi } } }
+modelProxy: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+mcpGateway: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+forge: { resources: { requests: { cpu: 50m, memory: 256Mi, ephemeral-storage: 1Gi } } }
+automations: { resources: { requests: { cpu: 50m, memory: 128Mi } } }
+egressProxy:
+  replicas: 1
+  resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 1Gi } }
+
+# Artifact thumbnails render in Chromium with its own sandbox required, which the container
+# runtime's default seccomp profile refuses outside gVisor: off here, so a laptop cluster comes up
+# clean. values-kind.yaml turns them on with the reviewed profile copied onto the kind node.
+artifactThumbnails:
+  enabled: false
+  resources:
+    requests: { cpu: 50m, memory: 256Mi, ephemeral-storage: 256Mi }
+    limits: { cpu: "1", memory: 1Gi, ephemeral-storage: 256Mi }

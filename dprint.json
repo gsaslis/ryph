@@ -1,0 +1,107 @@
+{
+  // Reproduces `deno fmt` (Deno 2.9.5): the same plugins at the versions Deno pins, with the
+  // options its `.deno()` builders and the old deno.jsonc `fmt` block set.
+  "lineWidth": 100,
+  "indentWidth": 2,
+  "useTabs": false,
+  "newLineKind": "lf",
+  "typescript": {
+    "nextControlFlowPosition": "sameLine",
+    "binaryExpression.operatorPosition": "sameLine",
+    "conditionalExpression.operatorPosition": "nextLine",
+    "conditionalType.operatorPosition": "nextLine",
+    "bracePosition": "sameLine",
+    "commentLine.forceSpaceAfterSlashes": false,
+    "constructSignature.spaceAfterNewKeyword": true,
+    "constructorType.spaceAfterNewKeyword": true,
+    "arrowFunction.useParentheses": "force",
+    "functionExpression.spaceAfterFunctionKeyword": true,
+    "taggedTemplate.spaceBeforeLiteral": false,
+    "conditionalExpression.preferSingleLine": true,
+    "quoteStyle": "preferDouble",
+    "jsx.multiLineParens": "prefer",
+    "module.sortImportDeclarations": "maintain",
+    "module.sortExportDeclarations": "maintain",
+    "exportDeclaration.sortTypeOnlyExports": "none",
+    "importDeclaration.sortTypeOnlyImports": "none",
+    "ignoreNodeCommentText": "deno-fmt-ignore",
+    "ignoreFileCommentText": "deno-fmt-ignore-file"
+  },
+  "json": {
+    "commentLine.forceSpaceAfterSlashes": false,
+    "trailingCommas": "never",
+    "ignoreNodeCommentText": "deno-fmt-ignore"
+  },
+  "markdown": {
+    "textWrap": "always",
+    "ignoreDirective": "deno-fmt-ignore",
+    "ignoreStartDirective": "deno-fmt-ignore-start",
+    "ignoreEndDirective": "deno-fmt-ignore-end",
+    "ignoreFileDirective": "deno-fmt-ignore-file"
+  },
+  "yaml": {
+    "quotes": "preferDouble",
+    "trailingComma": true,
+    "formatComments": false,
+    "indentBlockSequenceInMap": true,
+    "braceSpacing": true,
+    "bracketSpacing": false,
+    "dashSpacing": "oneSpace",
+    "preferSingleLine": false,
+    "trimTrailingWhitespaces": true,
+    "trimTrailingZero": false,
+    "ignoreCommentDirective": "deno-fmt-ignore"
+  },
+  "markup": {
+    "ignoreNodeCommentText": "deno-fmt-ignore",
+    "ignoreFileCommentText": "deno-fmt-ignore-file"
+  },
+  "css": {
+    "ignoreNodeCommentText": "deno-fmt-ignore",
+    "ignoreFileCommentText": "deno-fmt-ignore-file"
+  },
+  "excludes": [
+    "**/node_modules",
+    "**/drizzle*/meta/",
+    "compose.yaml",
+    // Go templates that render to YAML, not YAML.
+    "deploy/helm/*/templates/",
+    // deno.jsonc and each member's deno.json excluded their own README (app's isn't excluded).
+    "/README.md",
+    "packages/auth/README.md",
+    "packages/automations/README.md",
+    "packages/browser/README.md",
+    "packages/chat/README.md",
+    "packages/db/README.md",
+    "packages/forge/README.md",
+    "packages/historian/README.md",
+    "packages/host/README.md",
+    "packages/logger/README.md",
+    "packages/mcp-gateway/README.md",
+    "packages/memory/README.md",
+    "packages/model-proxy/README.md",
+    "packages/orchestrator/README.md",
+    "packages/pi-mcp/README.md",
+    "packages/playground/README.md",
+    "packages/previews/README.md",
+    "packages/radicle/README.md",
+    "packages/runner/README.md",
+    "packages/ryph/README.md",
+    "packages/sealed/README.md",
+    "packages/service/README.md",
+    "packages/tunnel/README.md",
+    "packages/web/README.md",
+    "packages/webhooks/README.md",
+    "packages/forge/docs/",
+    "packages/runner/docs/",
+    "packages/webhooks/docs/"
+  ],
+  "plugins": [
+    "https://plugins.dprint.dev/typescript-0.96.1.wasm@9c52244de2c25a33addc7ddacff4443234a2dc4b5d3f34131262d1e0df35007c",
+    "https://plugins.dprint.dev/json-0.21.3.wasm@f34c8fbaeda1f42c479d4a5fa2c86f93d105c2d527ec61fffe912e4d9dc5cc77",
+    "https://plugins.dprint.dev/markdown-0.20.0.wasm@5eb4e23248231ce0fc6b6379229b3bf7e0f649b337eacf47764ee8fe2c062257",
+    "https://plugins.dprint.dev/g-plane/pretty_yaml-v0.5.0.wasm@eae6b4db51bb656ec28b0cbf3875d30352688fd3c6131dd2646b6f680fff833a",
+    "https://plugins.dprint.dev/bartlomieju/lax-markup-0.3.2.wasm@0f98d8034f86ecf56d2a50f99189d201caa5bf84f75d514723737bcf6fcadec1",
+    "https://plugins.dprint.dev/bartlomieju/lax-css-0.3.0.wasm@18947bad6b22116318719f61bd842d7b88e52de86a22a1144908922adb860588"
+  ]
+}

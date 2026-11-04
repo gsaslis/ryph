@@ -1,0 +1,13 @@
+{{- if .Values.migrations.enabled }}
+# The lock wrapper every migration init container runs (files/migrate-locked.ts says why).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ryph-migrate
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+data:
+  locked.ts: |
+    {{- .Files.Get "files/migrate-locked.ts" | nindent 4 }}
+{{- end }}

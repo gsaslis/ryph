@@ -1,0 +1,54 @@
+# One Postgres server for the tests' databases (packages/orchestrator/docs/service-containers.md).
+#
+# The checks that name it run their packages' drizzle tests over it with RYPH_TEST_DB, rather than
+# on PGlite. Each PGlite is a whole Postgres in the test process's own heap, one per test, and with
+# `bun test --parallel` that made the orchestrator check the one stopped for memory, more than once.
+# A service's container is outside the checks' memory pool, so the databases' memory leaves it.
+# Each test gets a database of its own, copied from a template the migrations were applied to once
+# (@ryph/db/testing's `cloneTestDb`), so every worker of every check shares this one server.
+#
+# Named `db` because `postgres` is refused: the networked deployment's own database answers to it.
+#
+# Lean on purpose. Its memory is not watched by the pool and, under gVisor, not held to a limit,
+# and its disk is the 1 GiB a service gets. Nothing it holds outlives the suite, so durability is
+# switched off (fsync, synchronous_commit, full_page_writes, and the least WAL there is), and so is
+# autovacuum. shared_buffers is small, since every database is a few MB. max_connections leaves
+# room for every worker of every check that names it at once; each test's pool opens only the
+# connections it uses.
+#
+# Checks only: no run starts it. services.yml declares a run's services as well as the checks',
+# and a run has no use for this one, so it would only be a second Postgres in every run pod, and
+# on a deployment without service containers (the binary's and the Helm chart's default) every
+# run of this repo would be refused. An agent runs a package's tests on PGlite, as they run by
+# default, or over a Postgres it starts itself (environment.md).
+services:
+  db:
+    uses: postgres@18
+    checks_only: true
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - wal_level=minimal
+      - -c
+      - max_wal_senders=0
+      - -c
+      - max_wal_size=256MB
+      - -c
+      - autovacuum=off
+      - -c
+      - jit=off
+    env:
+      POSTGRES_USER: ryph
+      POSTGRES_PASSWORD: ryph
+      POSTGRES_DB: ryph
+    port: 5432

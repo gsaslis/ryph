@@ -1,0 +1,1 @@
+ALTER TABLE "memory_runs" DROP COLUMN "change";

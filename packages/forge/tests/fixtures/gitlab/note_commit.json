@@ -1,0 +1,73 @@
+{
+  "object_kind": "note",
+  "event_type": "note",
+  "user": {
+    "id": 31,
+    "name": "Ada Lovelace",
+    "username": "ada.lovelace",
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/31/avatar.png",
+    "email": "[REDACTED]"
+  },
+  "project_id": 4211,
+  "project": {
+    "id": 4211,
+    "name": "app",
+    "description": "The app",
+    "web_url": "https://gitlab.example.com/acme/platform/app",
+    "avatar_url": null,
+    "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+    "namespace": "platform",
+    "visibility_level": 0,
+    "path_with_namespace": "acme/platform/app",
+    "default_branch": "main",
+    "ci_config_path": null,
+    "homepage": "https://gitlab.example.com/acme/platform/app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "http_url": "https://gitlab.example.com/acme/platform/app.git"
+  },
+  "object_attributes": {
+    "author_id": 31,
+    "change_position": null,
+    "commit_id": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+    "created_at": "2026-10-14 09:20:01 UTC",
+    "discussion_id": "6a9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7be1",
+    "id": 88126,
+    "line_code": null,
+    "note": "/ryph ada why this?",
+    "noteable_id": null,
+    "noteable_type": "Commit",
+    "original_position": null,
+    "position": null,
+    "project_id": 4211,
+    "resolved_at": null,
+    "resolved_by_id": null,
+    "resolved_by_push": null,
+    "st_diff": null,
+    "system": false,
+    "type": null,
+    "updated_at": "2026-10-14 09:20:01 UTC",
+    "updated_by_id": null,
+    "description": "/ryph ada why this?",
+    "url": "https://gitlab.example.com/acme/platform/app/-/commit/da1560886d4f094c3e6c9ef40349f7d38b5d27d7#note_88126",
+    "action": "create"
+  },
+  "repository": {
+    "name": "app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "description": "The app",
+    "homepage": "https://gitlab.example.com/acme/platform/app"
+  },
+  "commit": {
+    "id": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+    "message": "Retry the upload once\n",
+    "title": "Retry the upload once",
+    "timestamp": "2026-10-14T09:12:43+00:00",
+    "url": "https://gitlab.example.com/acme/platform/app/-/commit/da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+    "author": {
+      "name": "Grace Hopper",
+      "email": "grace@example.com"
+    }
+  }
+}

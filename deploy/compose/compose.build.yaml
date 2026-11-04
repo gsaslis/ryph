@@ -1,0 +1,71 @@
+# Building ryph's images from this checkout instead of pulling them, layered over compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml build
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --wait
+#
+# (or COMPOSE_FILE=compose.yaml:compose.build.yaml in .env, and plain `docker compose`). Each build
+# is tagged with the same ref compose.yaml pulls, so a local build stands in for the published one
+# until the next `pull` replaces it. The universal image is the slow one: a machine with every
+# mainstream toolchain. Images are built for this machine's own architecture.
+
+services:
+  artifact-thumbnails:
+    build:
+      context: ../..
+      dockerfile: images/browser/Dockerfile
+  ryph:
+    build:
+      context: ../..
+      dockerfile: images/ryph/Dockerfile
+      # The stage RYPH_VARIANT names, so the tag compose.yaml gives it matches what it holds:
+      # `-radicle` builds `ryph-radicle`, which adds Radicle's CLI (README.md).
+      target: ryph${RYPH_VARIANT:-}
+
+  launcher:
+    build:
+      context: ../..
+      dockerfile: images/launcher/Dockerfile
+
+  radicle-node:
+    build:
+      context: ../..
+      dockerfile: images/radicle-node/Dockerfile
+  radicle:
+    build:
+      context: ../..
+      dockerfile: images/radicle/Dockerfile
+
+  # The agent image is the universal image with the harness layer copied on top. Named contexts
+  # hand it the two services below, so compose builds them first.
+  ryph-universal:
+    scale: 0
+    build:
+      context: ../..
+      dockerfile: images/env/universal/Dockerfile
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-universal:${RYPH_VERSION:-edge}
+  ryph-harness:
+    scale: 0
+    build:
+      context: ../..
+      dockerfile: images/harness/Dockerfile
+      args:
+        RYPH_VERSION: ${RYPH_VERSION:-edge}
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-harness:${RYPH_VERSION:-edge}
+  ryph-agent:
+    build:
+      context: ../..
+      dockerfile: images/agent/Dockerfile
+      args:
+        UNIVERSAL_IMAGE: ryph-universal
+        HARNESS_IMAGE: ryph-harness
+      additional_contexts:
+        ryph-universal: service:ryph-universal
+        ryph-harness: service:ryph-harness
+  ryph-tool-guard:
+    build:
+      context: ../..
+      dockerfile: images/tool-guard/Dockerfile
+  ryph-run-gate:
+    build:
+      context: ../..
+      dockerfile: images/run-gate/Dockerfile

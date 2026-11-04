@@ -1,0 +1,34 @@
+{
+  "name": "@ryph/runner",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "debug:setup": "bun --no-env-file scripts/seed_debug.ts",
+    "debug:clean": "rm -rf debug",
+    "debug": "bun run debug:setup && bun --no-env-file --inspect-wait=127.0.0.1:9229/runner src/main.ts --work-item debug/workitem.json --context debug/context.json",
+    "debug:attach": "bun --no-env-file --inspect-wait=127.0.0.1:9229/runner src/main.ts",
+    "compile": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig src/main.ts --outfile dist/ryph-runner && bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig src/bake.ts --outfile dist/ryph-bake",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@ryph/logger": "workspace:*",
+    "@ryph/process": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@ryph/tunnel": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/cli": "npm:@jsr/std__cli@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@std/streams": "npm:@jsr/std__streams@1",
+    "@std/yaml": "npm:@jsr/std__yaml@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "@ryph/shared": "workspace:*",
+    "@ryph/sealed": "workspace:*"
+  }
+}

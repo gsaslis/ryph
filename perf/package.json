@@ -1,0 +1,14 @@
+{
+  "name": "@ryph/perf",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsgo -p ."
+  },
+  "dependencies": {
+    "@ryph/process": "workspace:*",
+    "@std/cli": "npm:@jsr/std__cli@1",
+    "postgres": "^3.4.9"
+  }
+}

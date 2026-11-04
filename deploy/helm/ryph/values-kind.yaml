@@ -1,0 +1,14 @@
+# kind, on top of values-dev.yaml: artifact thumbnails, under the reviewed seccomp profile that lets
+# Chromium build its sandbox (packages/host/src/thumbnail_seccomp.json). Copy it onto the node
+# BEFORE installing (README.md, "Quick start on kind"):
+#
+#   docker exec ryph-control-plane mkdir -p /var/lib/kubelet/seccomp/ryph
+#   docker cp packages/host/src/thumbnail_seccomp.json \
+#     ryph-control-plane:/var/lib/kubelet/seccomp/ryph/thumbnail.json
+#
+# Without the file on the node the renderer's pod fails to start (CreateContainerError).
+artifactThumbnails:
+  enabled: true
+  seccompProfile:
+    type: Localhost
+    localhostProfile: ryph/thumbnail.json

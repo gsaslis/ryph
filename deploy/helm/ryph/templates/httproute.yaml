@@ -1,0 +1,138 @@
+{{- /*
+The front door as Gateway API routes, attached to a Gateway you run (`httpRoute.parentRefs`). The
+Gateway is shared infrastructure; these routes are this release's own and live in its services
+namespace, which is what lets two releases share one Gateway, each routed by hostname. A Gateway
+that should admit only services namespaces can select the `ryph.dev/services: "true"` label the
+chart puts on exactly that namespace.
+
+Same four paths as the Ingress. Gateway API resolves a request against the most specific match, so
+the forge's exact paths win over the automations prefix without either being listed first.
+*/ -}}
+{{- if .Values.httpRoute.enabled }}
+{{- $r := .Values.httpRoute -}}
+{{- $hostnames := $r.hostnames | default (list .Values.ingress.host) | compact -}}
+{{- if not $r.parentRefs }}{{ fail "httpRoute.parentRefs is required when httpRoute.enabled" }}{{ end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ryph
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with $r.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $r.parentRefs | nindent 4 }}
+  {{- with $hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- if $r.routeHooks }}
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/hooks/github
+      backendRefs:
+        - name: forge
+          port: 7412
+    # GitLab's deliveries (`?project=<id>`; an Exact match ignores the query), or they would fall
+    # through to the automations prefix below and be refused as an unknown mailbox.
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/hooks/gitlab
+      backendRefs:
+        - name: forge
+          port: 7412
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/hooks/
+      backendRefs:
+        - name: automations
+          port: 7414
+    {{- end }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: app
+          port: 3000
+{{- with $r.redirectParentRefs }}
+---
+# The plain-http listener answers with a redirect and never reaches a pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ryph-redirect
+  namespace: {{ include "ryph.ns.services" $ }}
+  labels:
+    {{- include "ryph.labels.plain" $ | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml . | nindent 4 }}
+  {{- with $hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+{{- if .Values.previews.enabled }}
+---
+# Every preview of this release: `*.<domain>` → previews:7490, the PUBLIC port. A wildcard, because
+# each preview is its own origin (`<id>.<domain>`, the id an HMAC no one can guess).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: previews
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml ($r.previews.parentRefs | default $r.parentRefs) | nindent 4 }}
+  hostnames:
+    - {{ printf "*.%s" .Values.previews.domain | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: previews
+          port: 7490
+{{- with ($r.previews.redirectParentRefs | default $r.redirectParentRefs) }}
+---
+# The viewer cookie is `__Host-` and Secure, so a preview over plain http could never be opened
+# anyway; this only saves somebody who typed the scheme a confusing 404.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: previews-redirect
+  namespace: {{ include "ryph.ns.services" $ }}
+  labels:
+    {{- include "ryph.labels.plain" $ | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml . | nindent 4 }}
+  hostnames:
+    - {{ printf "*.%s" $.Values.previews.domain | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+{{- end }}
+{{- end }}

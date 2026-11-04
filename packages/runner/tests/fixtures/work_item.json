@@ -1,0 +1,23 @@
+{
+  "id": "wi-0001",
+  "agent": { "name": "ada", "email": "ada@runner.local" },
+  "spec": {
+    "title": "echo the task",
+    "instructions": "Write the task into AGENT_NOTES.md."
+  },
+  "repos": [
+    {
+      "connectedRepoId": "cr-1",
+      "name": "test/repo",
+      "url": "set-at-runtime",
+      "ref": "main",
+      "path": "repo",
+      "branchNamespace": "runner/ada/wi-0001",
+      "description": null
+    }
+  ],
+  "workspace": null,
+  "harness": { "kind": "echo" },
+  "lifetime": { "idleMs": 60000, "attendedIdleMs": 60000 },
+  "canOpenPatches": true
+}

@@ -1,0 +1,102 @@
+{{- /*
+The front door as an Ingress. Four paths and no others: `/` is the app; `/v1/hooks/github` and
+`/v1/hooks/gitlab` (exact) the forge's GitHub and GitLab webhook intake, which the webhook secrets
+authenticate (GitLab's per project, derived from one master); the rest of `/v1/hooks/` the
+automations ingestion door, which each mailbox authenticates itself. The previews wildcard host gets
+an Ingress of its own, to the PUBLIC port only — its tunnel and API ports are never routed.
+
+Set `networkPolicy.frontDoor.from` to your ingress controller's pods (or its namespace), or the
+forge, the automations service and the previews public port admit nothing from it.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+{{- $i := .Values.ingress -}}
+{{- if not $i.host }}{{ fail "ingress.host is required when ingress.enabled" }}{{ end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ryph
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with $i.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $i.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $i.tls.enabled }}
+  tls:
+    - hosts: [{{ $i.host | quote }}]
+      secretName: {{ required "ingress.tls.secretName is required with ingress.tls.enabled" $i.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $i.host | quote }}
+      http:
+        paths:
+          {{- if $i.routeHooks }}
+          - path: /v1/hooks/github
+            pathType: Exact
+            backend:
+              service:
+                name: forge
+                port:
+                  number: 7412
+          - path: /v1/hooks/gitlab
+            pathType: Exact
+            backend:
+              service:
+                name: forge
+                port:
+                  number: 7412
+          - path: /v1/hooks/
+            pathType: Prefix
+            backend:
+              service:
+                name: automations
+                port:
+                  number: 7414
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port:
+                  number: 3000
+{{- if .Values.previews.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: previews
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with $i.previews.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $i.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $i.previews.tls.enabled }}
+  tls:
+    - hosts: [{{ printf "*.%s" .Values.previews.domain | quote }}]
+      secretName: {{ required "ingress.previews.tls.secretName is required with ingress.previews.tls.enabled" $i.previews.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ printf "*.%s" .Values.previews.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: previews
+                port:
+                  number: 7490
+{{- end }}
+{{- end }}

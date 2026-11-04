@@ -1,0 +1,142 @@
+{{- /*
+Untrusted HTML is rendered in a credential-free pod, never in the control plane. No outbound
+connections, including DNS: its NetworkPolicy has an empty egress list. NetworkPolicy enforcement is
+required for that to mean anything (README.md, "Requirements").
+*/ -}}
+{{- if .Values.artifactThumbnails.enabled }}
+{{- $v := .Values.artifactThumbnails -}}
+{{- if and (eq $v.sandbox "off") (not $v.runtimeClassName) }}
+{{- fail "artifactThumbnails.sandbox=off turns Chromium's sandbox off; that is allowed only inside an outer one (artifactThumbnails.runtimeClassName, gVisor say). Without one, keep it required and install the seccomp profile (README.md, \"Requirements\")." }}
+{{- end }}
+{{- if and (eq ($v.seccompProfile.type | default "") "Localhost") (not $v.seccompProfile.localhostProfile) }}
+{{- fail "artifactThumbnails.seccompProfile.type=Localhost needs localhostProfile: the profile's path under the kubelet's seccomp directory (ryph/thumbnail.json, say)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-thumbnails
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "artifact-thumbnails") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: artifact-thumbnails
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "artifact-thumbnails" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v "") | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with $v.runtimeClassName }}
+      # Chromium's own sandbox still runs inside this one: the required inner sandbox is kept as
+      # defence in depth, as the run browser's is.
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        fsGroup: 1994
+        {{- with $v.seccompProfile }}
+        # Chromium's sandbox needs user namespaces, which RuntimeDefault refuses outside a sandboxing
+        # runtime: a reviewed profile installed on the node (README.md, "Artifact thumbnails").
+        seccompProfile:
+          {{- toYaml . | nindent 10 }}
+        {{- else }}
+        seccompProfile:
+          type: RuntimeDefault
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+      containers:
+        - name: artifact-thumbnails
+          image: {{ include "ryph.image" (list . .Values.images.browser) }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          command: ["bun", "run", "src/thumbnail.ts"]
+          workingDir: /app/packages/browser
+          env:
+            - name: HOME
+              value: /tmp
+            # The default remains required. Only an outer sandbox may override this.
+            - name: RYPH_THUMBNAIL_SANDBOX
+              value: {{ $v.sandbox | quote }}
+          ports:
+            - name: http
+              containerPort: 7491
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifact-thumbnails
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: artifact-thumbnails
+  ports:
+    - name: http
+      port: 7491
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: artifact-thumbnails
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: artifact-thumbnails
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # A podSelector alone is restricted to this same namespace.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+      ports:
+        - protocol: TCP
+          port: 7491
+  egress: []
+{{- end }}

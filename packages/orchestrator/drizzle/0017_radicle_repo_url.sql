@@ -1,0 +1,12 @@
+-- A data-only migration: no column changes, so `drizzle-kit generate` has nothing to say about
+-- it and it is written by hand.
+--
+-- `connected_repos.url` is the repository's CANONICAL ADDRESS ON THE WIRE, not a page to link
+-- to: the services-file read (`readServicesFile(repo, url, ref)`), a workspace entry's identity
+-- (`entry.url === repo.url`), a change delivery's `repoUrl`, the run's git-key resolve and the
+-- repo cache's key are all that column, and the forge's schemas require it non-empty. The
+-- Radicle connect flow briefly stored "" so the app would not render `href="rad:z…"` — which is
+-- the APP's decision to make (`isWebLink`), and which cost every Radicle repo its ability to
+-- start a run: `url: Too small: expected string to have >=1 characters`, a 400 from the forge
+-- read as "services unavailable", and a refused `/ryph`.
+UPDATE "connected_repos" SET "url" = "repo_ref" WHERE "provider" = 'radicle' AND "url" = '';

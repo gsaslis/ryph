@@ -1,0 +1,114 @@
+/* The "h4x0r" appearance: a green-phosphor terminal, an easter egg in Account > Appearance.
+
+   It rides on dark mode (the account page sets mode "dark" and theme "h4x0r" together, so the
+   `.dark` class stays on <html> for everything keyed off it: code highlighting, toasts, diffs) and
+   is selected by mode-watcher's `data-theme` attribute. Every rule here is scoped to it, and the
+   attribute selector outranks `.dark`, so source order does not matter. */
+
+html[data-theme="h4x0r"] {
+  --background: oklch(0.12 0.03 150);
+  --foreground: oklch(0.85 0.25 145);
+  --card: oklch(0.15 0.04 150);
+  --card-foreground: oklch(0.85 0.25 145);
+  --popover: oklch(0.15 0.04 150);
+  --popover-foreground: oklch(0.85 0.25 145);
+  --primary: oklch(0.85 0.28 145);
+  --primary-foreground: oklch(0.12 0.03 150);
+  --secondary: oklch(0.22 0.06 150);
+  --secondary-foreground: oklch(0.85 0.25 145);
+  --muted: oklch(0.2 0.05 150);
+  --muted-foreground: oklch(0.65 0.18 145);
+  --accent: oklch(0.28 0.08 150);
+  --accent-foreground: oklch(0.9 0.25 145);
+  --border: oklch(0.4 0.14 145);
+  --input: oklch(0.3 0.1 145);
+  --ring: oklch(0.85 0.28 145);
+  --sidebar: oklch(0.09 0.02 150);
+  --sidebar-foreground: oklch(0.8 0.23 145);
+  --radius: 0;
+  --font-sans: ui-monospace, 'SF Mono', Menlo, Consolas, 'Courier New', monospace;
+  --font-heading: var(--font-sans);
+  --font-mono: var(--font-sans);
+  --brand-a: oklch(0.25 0.07 150);
+  --brand-b: oklch(0.3 0.09 160);
+  --brand-c: oklch(0.22 0.06 140);
+  --brand-d: oklch(0.32 0.1 150);
+  --brand-e: oklch(0.27 0.08 135);
+  --sidebar-border: oklch(0.4 0.14 145);
+  --sidebar-accent: oklch(0.2 0.06 150);
+  --sidebar-accent-foreground: oklch(0.9 0.25 145);
+  --sidebar-primary: oklch(0.85 0.28 145);
+  --sidebar-primary-foreground: oklch(0.12 0.03 150);
+  --paper: oklch(0.16 0.04 150);
+  --paper-foreground: oklch(0.85 0.25 145);
+  --tw-prose-body: oklch(0.85 0.25 145);
+  --tw-prose-headings: oklch(0.92 0.25 145);
+  --tw-prose-lead: oklch(0.85 0.25 145);
+  --tw-prose-links: oklch(0.92 0.28 145);
+  --tw-prose-bold: oklch(0.92 0.25 145);
+  --tw-prose-counters: oklch(0.7 0.2 145);
+  --tw-prose-bullets: oklch(0.7 0.2 145);
+  --tw-prose-quotes: oklch(0.85 0.25 145);
+  --tw-prose-quote-borders: oklch(0.4 0.14 145);
+  --tw-prose-code: oklch(0.92 0.25 145);
+  --tw-prose-pre-code: oklch(0.85 0.25 145);
+  --tw-prose-pre-bg: oklch(0.09 0.02 150);
+  --tw-prose-hr: oklch(0.4 0.14 145);
+  --tw-prose-th-borders: oklch(0.4 0.14 145);
+  --tw-prose-td-borders: oklch(0.3 0.1 145);
+  --tw-prose-invert-body: oklch(0.85 0.25 145);
+  --tw-prose-invert-headings: oklch(0.92 0.25 145);
+  --tw-prose-invert-lead: oklch(0.85 0.25 145);
+  --tw-prose-invert-links: oklch(0.92 0.28 145);
+  --tw-prose-invert-bold: oklch(0.92 0.25 145);
+  --tw-prose-invert-counters: oklch(0.7 0.2 145);
+  --tw-prose-invert-bullets: oklch(0.7 0.2 145);
+  --tw-prose-invert-quotes: oklch(0.85 0.25 145);
+  --tw-prose-invert-quote-borders: oklch(0.4 0.14 145);
+  --tw-prose-invert-code: oklch(0.92 0.25 145);
+  --tw-prose-invert-pre-code: oklch(0.85 0.25 145);
+  --tw-prose-invert-pre-bg: oklch(0.09 0.02 150);
+  --tw-prose-invert-hr: oklch(0.4 0.14 145);
+  --tw-prose-invert-th-borders: oklch(0.4 0.14 145);
+  --tw-prose-invert-td-borders: oklch(0.3 0.1 145);
+  /* Status colours the tinted badges carry as text: bright enough to read on their own wash. */
+  --success: oklch(0.85 0.25 145);
+  --success-foreground: oklch(0.12 0.03 150);
+  --warning: oklch(0.85 0.17 90);
+  --destructive: oklch(0.75 0.22 25);
+  color-scheme: dark;
+  /* Tailwind inlines the font tokens into its utilities, so the variables above are not enough. */
+  font-family: var(--font-sans);
+  scrollbar-color: oklch(0.5 0.2 145) oklch(0.1 0.02 150);
+}
+
+html[data-theme="h4x0r"] .prose,
+html[data-theme="h4x0r"] .prose :where(p, li, span, strong, em, td, th, h1, h2, h3, h4, code) {
+  color: var(--foreground);
+}
+
+/* The CRT: a faint glow on the text and scanlines over everything. Both are skipped for people who
+   ask for more contrast or less motion/transparency. */
+@media (prefers-contrast: no-preference) and (prefers-reduced-transparency: no-preference) {
+  html[data-theme="h4x0r"] body {
+    text-shadow: 0 0 2px oklch(0.85 0.25 145 / 0.35);
+  }
+  html[data-theme="h4x0r"] body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(0deg, transparent 0 2px, oklch(0 0 0 / 0.08) 2px 3px);
+  }
+}
+
+html[data-theme="h4x0r"] :is(body, button, input, textarea, select, h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-sans);
+}
+
+/* The "active" tone takes --primary-foreground for its text in dark mode, which here is the dark
+   ink for solid green fills, and unreadable on the badge's translucent wash. */
+html[data-theme="h4x0r"] [data-slot="badge"].dark\:text-primary-foreground {
+  color: var(--primary);
+}

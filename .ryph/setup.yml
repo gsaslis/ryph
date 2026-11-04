@@ -1,0 +1,30 @@
+# ryph, working on ryph. The environment a run gets before the agent starts
+# (packages/runner/docs/environment-setup.md is the contract this file answers to).
+#
+# One install step, on purpose. Everything the test suites need is in bun.lock — every workspace
+# member's npm dependencies, the app's included — and `bun install` installs all of it in one pass.
+# It is also what CI does before `bun run ci` (.github/workflows/ci.yml), so setup and the gate
+# start from the same state.
+#
+# `--frozen-lockfile` for the same reason CI uses it: it fails loudly when a package.json moved
+# without bun.lock being refreshed, rather than silently resolving something else than the gate
+# will. An agent that changes a dependency has to run `bun install` itself and commit the lockfile
+# — which is the correct outcome, and one it would otherwise only learn from a red CI.
+#
+# No toolchain step: the universal image ships mise with its shims on PATH, so the first `bun`
+# installs the version mise.toml pins if the image's own is another one (images/env/universal).
+# No build step either: nothing that runs a test needs `bun run build` or the app's vite build
+# first, and both cost minutes that every run would pay and almost none would use.
+#
+# And no step needs a service: everything that touches Postgres runs it embedded via pglite
+# (`pglite:memory://`, or a `data/` dir that is gitignored). The `db` service in services.yml is
+# for the checks alone (`checks_only`), which run the drizzle tests over it to keep those databases
+# out of their memory pool; no run or image build gets it. The tests that need a real networked
+# stack are the compose and k8s ones, and those need a container runtime the agent image
+# deliberately does not ship — they stay CI's, see environment.md.
+steps:
+  - name: install workspace dependencies (from bun.lock)
+    run: bun install --frozen-lockfile
+  # dprint downloads its plugins on first use. Baked into the image, the lint check never has to.
+  - name: fetch dprint's plugins (image builds only)
+    run: '[ "$RYPH_SETUP_PHASE" = image ] && bunx dprint output-resolved-config >/dev/null || true'

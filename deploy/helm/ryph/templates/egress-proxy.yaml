@@ -1,0 +1,110 @@
+{{- /*
+The egress proxy: the one way out of the runs namespace, and the only place a hostname allowlist can
+actually be enforced (images/egress-proxy/main.ts).
+
+IN ITS OWN NAMESPACE. This pod is the single process whose whole job is to reach the open internet,
+so it must not be reachable FROM the internet and must not be able to reach anything of ours. The
+egress namespace holds it alone, its default-deny goes both ways, and the one ingress rule admits
+runs, builds and check pods and nothing else.
+
+IT HOLDS NO CREDENTIAL, and that bounds the prize. RYPH_EGRESS_KEY only VERIFIES the claim a run
+presents — it signs nothing this process sends, unseals nothing, and opens no upstream. No database
+and no control listener: the run's token IS the policy. The one thing it SENDS is a refused host, to
+the control plane, presenting the subject's own claim.
+*/ -}}
+{{- $v := .Values.egressProxy -}}
+{{- $env := include "ryph.egressProxy.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-proxy
+  namespace: {{ include "ryph.ns.egress" . }}
+  labels:
+    {{- include "ryph.labels" (list . "egress-proxy") | nindent 4 }}
+spec:
+  # Every run's installs cross this pod, so one replica makes a rolling update an outage for every
+  # run in `setting-up` at once. Stateless, so two is the whole cost of neither.
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egress-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "egress-proxy" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "egressProxy"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      # No API credential: this process asks Kubernetes nothing, and the namespace enforces
+      # `restricted`, so the posture below is checked rather than promised.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: egress-proxy
+          image: {{ include "ryph.image" (list . .Values.images.egressProxy) }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: proxy
+              containerPort: 7460
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            # RYPH_EGRESS_KEY. The same value is on the control plane, the only other holder: one
+            # signs, one verifies.
+            - secretRef:
+                name: {{ include "ryph.secretName" (list . "egressProxy") }}
+          # No HTTP health endpoint, on purpose: a `/healthz` would be a route on the one listener
+          # whose every other request is authorized. A TCP probe answers the kubelet's question.
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 10
+            failureThreshold: 6
+          # The only pod on the byte path of every install: socket buffers and copying rather than
+          # compute. A memory limit above the request turns a spike in tunnels into a slower install
+          # instead of a killed pod; CPU stays at the request, which is throttling rather than death.
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-proxy
+  namespace: {{ include "ryph.ns.egress" . }}
+  labels:
+    {{- include "ryph.labels" (list . "egress-proxy") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: egress-proxy
+  ports:
+    - name: proxy
+      port: 7460
+      targetPort: proxy
+
+{{- define "ryph.egressProxy.env" -}}
+- name: RYPH_EGRESS_PORT
+  value: "7460"
+# Where a refused host is reported. Nothing else is ever sent here, and the request is
+# fire-and-forget: a control plane that is down costs a diagnostic line and never a run's install.
+- name: RYPH_EGRESS_REPORT_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+{{- end -}}

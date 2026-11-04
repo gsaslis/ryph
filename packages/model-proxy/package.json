@@ -1,0 +1,35 @@
+{
+  "name": "@ryph/model-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./schema": "./src/adapters/store/db/schema.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=.env src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "db:push": "bunx drizzle-kit push",
+    "db:generate": "bunx drizzle-kit generate",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@ryph/auth": "workspace:*",
+    "@ryph/db": "workspace:*",
+    "@ryph/logger": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@ryph/shared": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "^0.44.7",
+    "jose": "^6.1.0",
+    "postgres": "^3.4.9"
+  }
+}

@@ -1,0 +1,12 @@
+ALTER TABLE "proxy_usage" ADD COLUMN "agent_id" text;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "task_id" text;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "input_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "output_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "cache_read_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "cache_write_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "cache_write_1h_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "reasoning_tokens" integer;--> statement-breakpoint
+ALTER TABLE "proxy_usage" ADD COLUMN "duration_ms" integer;--> statement-breakpoint
+ALTER TABLE "virtual_keys" ADD COLUMN "agent_id" text;--> statement-breakpoint
+ALTER TABLE "virtual_keys" ADD COLUMN "task_id" text;--> statement-breakpoint
+CREATE INDEX "proxy_usage_by_at" ON "proxy_usage" USING btree ("at");

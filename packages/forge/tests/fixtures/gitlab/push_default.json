@@ -1,0 +1,63 @@
+{
+  "object_kind": "push",
+  "event_name": "push",
+  "before": "b83d6e391c22777fca1ed3012fce84f633d7fed0",
+  "after": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+  "ref": "refs/heads/main",
+  "ref_protected": true,
+  "checkout_sha": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+  "message": null,
+  "user_id": 31,
+  "user_name": "Ada Lovelace",
+  "user_username": "ada.lovelace",
+  "user_email": "",
+  "user_avatar": null,
+  "project_id": 4211,
+  "project": {
+    "id": 4211,
+    "name": "app",
+    "description": "The app",
+    "web_url": "https://gitlab.example.com/acme/platform/app",
+    "avatar_url": null,
+    "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+    "namespace": "platform",
+    "visibility_level": 0,
+    "path_with_namespace": "acme/platform/app",
+    "default_branch": "main",
+    "ci_config_path": null,
+    "homepage": "https://gitlab.example.com/acme/platform/app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "http_url": "https://gitlab.example.com/acme/platform/app.git"
+  },
+  "commits": [
+    {
+      "id": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+      "message": "Retry the upload once\n",
+      "title": "Retry the upload once",
+      "timestamp": "2026-10-14T09:12:43+00:00",
+      "url": "https://gitlab.example.com/acme/platform/app/-/commit/da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+      "author": {
+        "name": "Grace Hopper",
+        "email": "[REDACTED]"
+      },
+      "added": [],
+      "modified": [
+        "src/upload.ts"
+      ],
+      "removed": []
+    }
+  ],
+  "total_commits_count": 1,
+  "push_options": {},
+  "repository": {
+    "name": "app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "description": "The app",
+    "homepage": "https://gitlab.example.com/acme/platform/app",
+    "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+    "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "visibility_level": 0
+  }
+}

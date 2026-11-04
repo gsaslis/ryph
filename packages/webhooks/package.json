@@ -1,0 +1,29 @@
+{
+  "name": "@ryph/webhooks",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./schema": "./src/adapters/store/db/schema.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "db:push": "bunx drizzle-kit push",
+    "db:generate": "bunx drizzle-kit generate",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@ryph/db": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "^0.44.7",
+    "postgres": "^3.4.9",
+    "@ryph/shared": "workspace:*"
+  }
+}

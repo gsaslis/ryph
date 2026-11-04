@@ -1,0 +1,1376 @@
+# The networked deployment — Mode B — on one machine: the example deployment of ryph as separate
+# services, the shape closest to Kubernetes (deploy/helm/ryph).
+#
+# Every service in its own container, one Postgres with a database per owner, in the same topology
+# and with the same env contract as a real deployment, and without a cloud account. It pulls the
+# published images (quay.io/ryph, at RYPH_VERSION, default `edge`):
+#
+#   bun run compose:init                    # writes the secrets below into .env
+#   docker compose pull && docker compose up -d --wait
+#
+# and `bun run compose:up` builds them from this checkout instead (compose.build.yaml), for
+# development; `bun run compose:smoke` then drives the cross-service links end to end. See
+# README.md beside this file, including what this file cannot do that a real deployment does.
+#
+# The OTHER deployment is the `ryph` binary (packages/ryph), one process on one database, which
+# deploy/compose runs with Docker Compose: the simplest way to self-host. Nothing in this file
+# applies to it.
+#
+#   ┌─ app :3000 ──────── the only thing a browser talks to; proxies /api/v1/* seven ways
+#   │     ├── control-plane :7411   orchestrator + auth — runs, agents, policy, identity, JWKS
+#   │     ├── historian    :7413   transcript reads
+#   │     ├── model-proxy  :7421   provider-key management (CONTROL listener)
+#   │     ├── mcp-gateway  :7431   MCP server management and the tool-call trail (CONTROL listener)
+#   │     ├── automations  :7414   user-created triggers (webhook + cron) and their fires
+#   │     ├── memory       :7440   the memory manager — browse, write, review
+#   │     └── chat         :7450   chatrooms — Telegram, Zulip, Slack, Discord bots, their channels
+#   ├─ automations ────→ control-plane :7411              fires become tasks (events door)
+#   │              └───→ chat :7450 /v1/chatrooms/:id    which platform a response's room is on
+#   ├─ control-plane ──→ model-proxy :7421  /internal/…  mint and kill run credentials
+#   │                └─→ mcp-gateway :7431  /internal/…  the same, for tool credentials
+#   │                └─→ historian   :7413  /internal/…  conclude
+#   │                └─→ memory      :7440  /internal/…  compose a run's brief, report its outcome
+#   │                └─→ chat        :7450  /internal/…  bind a run to a conversation, close it,
+#   │                                                     check a commander, read a thread
+#   │                └─→ forge       :7412               permission checks, patch submission
+#   │                └─→ previews    :7493  /internal/…  register a run's preview, mint a viewer ticket
+#   ├─ historian ─────→ control-plane :7411              verify a run token
+#   ├─ forge ─────────→ control-plane :7411              resolve a run's git key
+#   ├─ mcp-gateway ───→ the MCP servers operators registered, with the real credential
+#   │              └─→ memory :7440 /v1/memory-mcp       the platform's memory tools, per run
+#   │              └─→ chat   :7450 /v1/chat-mcp         the platform's chat tool, per bound run
+#   │              └─→ web    :7480 /v1/web-mcp          the platform's web tools, per run
+#   ├─ web ───────────→ the public internet                 pages an AGENT asked for, and search
+#   ├─ chat ──────────→ control-plane :7411              every mention into the mention door
+#   │            └───→ api.telegram.org, slack.com,      the bots, long-polled (Slack over a
+#   │                  discord.com, Zulip realms         Socket Mode WebSocket, Discord over
+#   │                                                     its Gateway)
+#   ├─ memory ────────→ model-proxy :7421 /internal/…    mint a PLATFORM credential (its own token)
+#   │            └───→ model-proxy :7420                 spend it: the consolidator's judgement
+#   ├─ control-plane ──→ launcher :7470  /v1/…           launch, inspect and kill runs, check
+#   │                                                     suites, environment builds, prefetch
+#   ├─ mcp-gateway ───→ launcher :7470  /v1/tools/…       hosted MCP servers, on ryph-tools-ryph
+#   │            └───→ the tool guard, by name           the one way onto ryph-tools-ryph
+#   ├─ launcher ──────→ the docker socket                 the only container that holds it
+#   ├─ hosted MCP servers (on ryph-tools-ryph, an internal network) → the egress relay
+#   │     ryph-egress-relay-ryph-tools-ryph → egress-proxy :7461 (public hosts, their claims only);
+#   │     nothing else, the guard aside, which dials them
+#   ├─ agent containers (on ryph-runs-ryph, an internal network) → the run gate ryph-gate-ryph,
+#   │     which relays exactly control-plane :7411, forge :7412, historian :7413, model-proxy :7420
+#   │     and mcp-gateway :7430 (DATA listeners), egress-proxy :7460 (their one way out), and
+#   │     previews :7491 /tunnel/… (the runner's preview tunnel, dialled OUT); nothing else
+#   └─ browser ─────────→ previews :7490  http://<id>.preview.localhost:7490, a preview an agent
+#                                          exposed (ryph__expose_port), behind a viewer cookie
+#
+# PROVISIONER. `docker`, through the launcher (images/launcher).
+# The control-plane image carries no docker CLI, and mounting the docker socket into it would
+# hand the process that holds the OAuth master key the host's daemon. So the socket goes to the
+# launcher alone, which holds no platform secret, and the control plane asks it over HTTP with
+# RYPH_LAUNCHER_TOKEN to launch runs, check suites and environment builds. The MCP gateway hosts
+# servers the same way with a second token that opens nothing else. Everything about a container
+# that could reach past it (networks, the gate, the runtime, mounts, privileges) is the launcher's
+# own configuration below, never a request's.
+#
+# RUNS ARE CONFINED. The launcher puts every run on ryph-runs-ryph, an internal network with no
+# route anywhere, whose one door is the run gate (`ryph-gate-ryph`, named for this file's
+# network): a container on both networks relaying the ports in RYPH_DOCKER_GATE_ROUTES, each to
+# the service behind it, and nothing else. So every address the services hand a run names the
+# gate, and the egress proxy is a run's only way to the internet, through its allowlist.
+#
+# SO ARE HOSTED MCP SERVERS. The launcher puts them on ryph-tools-ryph, internal too, which no
+# service here joins: the gateway reaches them through their tool guard, the one container also
+# on `ryph`, and their one way out is the egress relay to the egress proxy's second listener
+# (:7461), which takes only claims the gateway signs (RYPH_EGRESS_TOOL_KEY) and dials only public
+# addresses. A vendor's image reaches none of the services, the docker host or the LAN.
+#
+# WHAT COMPOSE CANNOT EXPRESS, NARROWED. In a real deployment the model-proxy's two listeners live
+# behind two different network policies: :7420 is reachable from the run network, :7421 is not,
+# and the mcp-gateway's :7430/:7431 pair is the same split one credential class over. Here the
+# gate draws that line for runs: it relays :7420 and :7430 and not :7421 or :7431, so a run cannot
+# open a connection to either internal listener at all. Among the SERVICES the network is still
+# flat (a service that can reach :7420 can reach :7421), so between them the boundary rests on the
+# service token each internal surface checks. That is deliberate in the code (see the service gate
+# in packages/sealed/src/service_gate.ts, which both use), and it is why the internal routes
+# stay dark unless RYPH_MODEL_PROXY_TOKEN and RYPH_MCP_GATEWAY_TOKEN are set.
+#
+# SECRETS. None has a default: every `${VAR:?…}` below is required, and compose refuses to start
+# without it. `bun run compose:init` (which `compose:up` runs first) writes fresh random values
+# for the missing ones into .env beside this file and never touches one already there. The
+# placeholders this file once shipped are public, so every service also refuses to boot holding
+# one (packages/service/src/dev_secrets.ts).
+
+name: ryph
+
+# The network is named, not derived, because the launcher is told the name (RYPH_DOCKER_NETWORK)
+# and starts the run gate on it, where every route's target resolves. The run network itself,
+# ryph-runs-ryph, is the launcher's to make (internal, and refused if it is not), not compose's.
+#
+# The tools network, ryph-tools-ryph, is the launcher's to make too (internal, its gateway
+# isolated, and refused where the engine cannot), and no service joins it: hosted MCP servers,
+# their tool guard and their egress relay are all that is on it. Both are named for this file's
+# network, so they never meet the `ryph` binary's own `ryph-runs` and `ryph-tools` on the same
+# engine. The run network's name is no launcher default: it confines runs only where
+# RYPH_DOCKER_RUN_NETWORK names a network.
+networks:
+  default:
+    name: ryph
+
+# Every database beside `ryph` (which POSTGRES_DB creates), run by postgres's
+# /docker-entrypoint-initdb.d hook on an empty data directory.
+#
+# Mode B gives each service that owns tables its OWN database on the shared server, and this is
+# where that shape is declared. It is not fastidiousness: the control plane holds the OAuth master
+# key's ciphertext, the proxy holds every provider secret's, the gateway every MCP credential's,
+# and the historian holds the transcript firehose. One database would mean one credential opening
+# all of them, and the split exists to stop exactly that.
+#
+#   ryph                orchestrator + auth   (packages/orchestrator/drizzle.config.ts)
+#   ryph_history        historian             (packages/historian/drizzle.config.ts)
+#   ryph_keys           model-proxy           (packages/model-proxy/drizzle.config.ts)
+#   ryph_mcp            mcp-gateway           (packages/mcp-gateway/drizzle.config.ts)
+#   ryph_forge          forge — the webhooks table (packages/webhooks/drizzle.config.ts)
+#   ryph_automations    automations + its mailroom's webhooks table
+#                       (packages/automations/drizzle.config.ts)
+#   ryph_memory         memory                (packages/memory/drizzle.config.ts)
+#   ryph_chat           chat                  (packages/chat/drizzle.config.ts)
+#   ryph_radicle        radicle bridge — the event cursors; only used with the `radicle` profile
+#
+# The orchestrator's config pushes TWO schemas into `ryph`, because auth is mounted in the control
+# plane rather than being its own process. ryph_forge, ryph_mcp, ryph_automations, ryph_memory,
+# ryph_chat and ryph_radicle are ALSO created by their own migrate jobs (each package's
+# scripts/ensure_database.ts), so stacks whose volumes predate them keep working without a
+# compose:reset; they are listed here so a fresh stack's databases are declared in one place.
+#
+# Inline rather than a file in the checkout: compose copies a config's content into the container,
+# where a bind mount of a checkout file is unreadable to postgres on NAS shares that only let
+# their admin group read.
+configs:
+  init-databases:
+    content: |
+      CREATE DATABASE ryph_history;
+      CREATE DATABASE ryph_keys;
+      CREATE DATABASE ryph_mcp;
+      CREATE DATABASE ryph_forge;
+      CREATE DATABASE ryph_automations;
+      CREATE DATABASE ryph_memory;
+      CREATE DATABASE ryph_chat;
+      CREATE DATABASE ryph_radicle;
+
+volumes:
+  postgres-data:
+  # cache/ and staging/ only: the forge's working set. Its durable output — the patch bundles —
+  # lives in object storage here, which is what lets it have more than one replica.
+  forge-data:
+  objects-data:
+  # RAD_HOME for BOTH containers of the optional `radicle` service: the node's storage, its
+  # key, and the control socket the bridge dials — one volume, because `git-remote-rad` writes
+  # into storage on the local filesystem and the control socket is a file in it. Only created
+  # when the `radicle` profile is on.
+  radicle-data:
+  # The fixture repository the forge serves as a repository on this machine (fixture-repo below):
+  # what `compose:smoke` and `perf:load` connect and start their tasks on.
+  fixtures:
+  # The artifact sanitizer supervisor's socket, shared by the sanitizer and control-plane services
+  # (the second read-only). Seeded from the image's /run/ryph-sanitizer: the sanitizer user's, 0750.
+  sanitizer-socket:
+  # Seeded only by the browser image, uid/gid 1994, mode 0750.
+  thumbnail-socket:
+  # The launcher's: its HOME (buildx's builder state), the environment builder's layer cache, and a
+  # build's temp files (the clones, the generated files, the OCI layouts). Builds happen in the
+  # launcher's container, so their working set is its volumes.
+  launcher-home:
+  launcher-cache:
+  launcher-temp:
+
+# One token per service link, each guarding both directions of that link — and one anchor per
+# token, so a service can be handed the links it is an end of and nothing else. Distinct on
+# purpose: a leaked forge credential must not also open the historian, and that is only true if
+# the forge never holds the historian's token in the first place.
+#
+# Every link here but one is control-plane ⇄ peer, so the control plane merges its five and each
+# peer merges what it is an end of (the gateway: two — its own, and the memory data route's).
+# Handing a peer the full set would make each of these tokens as strong as
+# the weakest process holding it: every one of them is the ENTIRE boundary on its service's
+# internal surface (see "what compose cannot express" above), and those surfaces mint run
+# credentials against the operator's real secrets.
+x-forge-token: &forge-token
+  RYPH_FORGE_TOKEN: ${RYPH_FORGE_TOKEN:?run bun run compose:init}
+x-history-token: &history-token
+  RYPH_HISTORY_TOKEN: ${RYPH_HISTORY_TOKEN:?run bun run compose:init}
+x-model-proxy-token: &model-proxy-token
+  RYPH_MODEL_PROXY_TOKEN: ${RYPH_MODEL_PROXY_TOKEN:?run bun run compose:init}
+x-automations-token: &automations-token
+  RYPH_AUTOMATIONS_TOKEN: ${RYPH_AUTOMATIONS_TOKEN:?run bun run compose:init}
+x-mcp-gateway-token: &mcp-gateway-token
+  RYPH_MCP_GATEWAY_TOKEN: ${RYPH_MCP_GATEWAY_TOKEN:?run bun run compose:init}
+# Two links end at the memory service, from two different peers, so two tokens: the control
+# plane's (briefs and outcomes) and the gateway's (the MCP data route). A leaked gateway
+# credential must not also let someone compose a run's brief, and vice versa.
+x-memory-token: &memory-token
+  RYPH_MEMORY_TOKEN: ${RYPH_MEMORY_TOKEN:?run bun run compose:init}
+x-memory-gateway-token: &memory-gateway-token
+  RYPH_MEMORY_GATEWAY_TOKEN: ${RYPH_MEMORY_GATEWAY_TOKEN:?run bun run compose:init}
+# The platform's own model calls: the memory service (and the control plane, for task titles) mints
+# a platform-scoped virtual key from the proxy with this, and nothing else — it cannot issue run
+# credentials or read key metadata, which is what the control plane's other token also allows.
+x-platform-token: &platform-token
+  RYPH_PLATFORM_TOKEN: ${RYPH_PLATFORM_TOKEN:?run bun run compose:init}
+# The chat service's two links, like memory's: the control plane's (bindings out, a room's
+# mentions back — one link, one token, both directions) and the gateway's (the MCP data route).
+x-chat-token: &chat-token
+  RYPH_CHAT_TOKEN: ${RYPH_CHAT_TOKEN:?run bun run compose:init}
+x-chat-gateway-token: &chat-gateway-token
+  RYPH_CHAT_GATEWAY_TOKEN: ${RYPH_CHAT_GATEWAY_TOKEN:?run bun run compose:init}
+# The launcher's two links, two tokens: the control plane's opens the run side (runs, the
+# reconcile, checks, builds, prefetch) and the gateway's opens the tool host and nothing else. A
+# leaked gateway credential starts and stops unprivileged `ryph-tool-*` containers of any image on
+# the tools network, under the launcher's RYPH_DOCKER_RUNTIME like a run and confined like one; it
+# cannot launch a run, and cannot put an image of its own on the deployment network.
+#
+# Hosted MCP servers' egress claims are signed with the next key, by the gateway, and verified by
+# the egress proxy's tool listener. Never RYPH_EGRESS_KEY's value: a run's claim must not open the
+# tool listener, nor a hosted server's the runs' (the proxy refuses to start with one for both).
+x-egress-tool-key: &egress-tool-key
+  RYPH_EGRESS_TOOL_KEY: ${RYPH_EGRESS_TOOL_KEY:?run bun run compose:init}
+x-launcher-token: &launcher-token
+  RYPH_LAUNCHER_TOKEN: ${RYPH_LAUNCHER_TOKEN:?run bun run compose:init}
+x-launcher-tools-token: &launcher-tools-token
+  RYPH_LAUNCHER_TOOLS_TOKEN: ${RYPH_LAUNCHER_TOOLS_TOKEN:?run bun run compose:init}
+# The web service has ONE link, the gateway's: it holds nothing anyone owns, so there is no
+# internal surface and no user surface to guard.
+x-web-gateway-token: &web-gateway-token
+  RYPH_WEB_GATEWAY_TOKEN: ${RYPH_WEB_GATEWAY_TOKEN:?run bun run compose:init}
+# The control plane ⇄ previews link. The previews service also keys its preview ids and viewer
+# cookies on it, so it is the whole of that service's secret.
+x-previews-token: &previews-token
+  RYPH_PREVIEWS_TOKEN: ${RYPH_PREVIEWS_TOKEN:?run bun run compose:init}
+# Forge tools act as the GitHub App or the GitLab bot, so they are opt-in beside it: set
+# RYPH_FORGE_GATEWAY_TOKEN (with the App's four variables, or GitLab's) and the gateway wires the
+# forge's tool surface, the forge serves it, and the control plane lets agents hold a forge policy.
+# Unset, all three stay dark.
+x-forge-gateway-token: &forge-gateway-token
+  RYPH_FORGE_GATEWAY_TOKEN: ${RYPH_FORGE_GATEWAY_TOKEN:-}
+# The forge ⇄ radicle link, one token guarding both directions like every other: the forge
+# presents it to the bridge's HTTP surface, and the bridge presents it back when it drops a
+# ForgeEvent into the forge's mailroom — the bridge presents this same variable coming back, one
+# link, one credential. It is required like its siblings; what actually turns the Radicle
+# provider on is RYPH_RADICLE_URL on the forge, which is empty unless you set it.
+x-radicle-token: &radicle-token
+  RYPH_RADICLE_TOKEN: ${RYPH_RADICLE_TOKEN:?run bun run compose:init}
+
+# The images runs, hosted servers and builds launch on: named on the control plane and the gateway,
+# which put them in launch specs, and on the launcher, which fetches them ahead of the first launch
+# that needs one. The agent image carries pi and `echo`, the runner's built-in reference harness,
+# which runs the whole control loop for real while burning no tokens (images/README.md).
+x-run-images: &run-images
+  RYPH_AGENT_IMAGE: ${RYPH_AGENT_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-agent:${RYPH_VERSION:-edge}}
+  RYPH_ENV_BASE_IMAGE: ${RYPH_ENV_BASE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-universal:${RYPH_VERSION:-edge}}
+  RYPH_HARNESS_IMAGE: ${RYPH_HARNESS_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-harness:${RYPH_VERSION:-edge}}
+  RYPH_BROWSER_IMAGE: ${RYPH_BROWSER_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-browser:${RYPH_VERSION:-edge}}
+
+# Environment builds and checks, the same switch on the control plane and the launcher: the control
+# plane refuses to boot claiming either when the launcher serves neither.
+x-builds-and-checks: &builds-and-checks
+  RYPH_ENVIRONMENTS: ${RYPH_ENVIRONMENTS:-on}
+  RYPH_CHECKS: ${RYPH_CHECKS:-on}
+
+x-logging: &logging
+  RYPH_LOG_LEVEL: ${RYPH_LOG_LEVEL:-info}
+  RYPH_LOG_FORMAT: ${RYPH_LOG_FORMAT:-text}
+
+# Every Bun service answers /readyz, and none of the images carries curl or wget — so the probe
+# is the runtime that is already there: `bun -e`, with --no-env-file so a probe reads nothing from
+# the service's directory. It runs with every right of the service user, which is why this probe
+# is a fixed literal and never interpolated.
+# Compose's default stop grace is 10 SECONDS, and every service here drains on a 25s deadline
+# (RYPH_DRAIN_DEADLINE_MS). Left alone the two disagree and docker SIGKILLs mid-drain, which is
+# precisely the failure the drain was written to stop: a replica cut while an SSE tail is open.
+# 30s leaves the deadline room to fire and the process to exit 0 on its own.
+x-stop-grace: &stop-grace 30s
+
+# Every service image's root filesystem, read-only: its code and dependencies are root-owned
+# already, and this takes the rest of the image out of reach too (/etc, the service user's HOME),
+# which under Deno its --allow-write scope did. What a service writes goes to its volume or to /tmp.
+x-read-only: &read-only
+  read_only: true
+  tmpfs: [/tmp]
+
+x-bun-ready: &bun-ready
+  interval: 5s
+  timeout: 5s
+  retries: 20
+  start_period: 20s
+
+services:
+  # ── state ────────────────────────────────────────────────────────────────────────────────────
+  # S3-compatible object storage, standing in for whatever the deployment actually uses. It is
+  # here rather than optional because the alternative — patches on the forge's own volume — is
+  # exactly the thing that pins the forge at one replica, and a stack that demonstrates the
+  # single-replica shape is not demonstrating Mode B.
+  #
+  # It also earns something no unit test can: the SigV4 signer is hand-rolled, and only a real S3
+  # implementation can say whether it accepts a signature.
+  #
+  # SeaweedFS, and no longer MinIO. MinIO stopped publishing community container images in October
+  # 2025 — mid-way through a critical CVE release — and archived the repository read-only in
+  # February 2026; `minio/minio` and `minio/mc` now 404 on Docker Hub, which is what took this
+  # stack down. Its quay.io mirror still serves, but it is a registry MinIO controls and has
+  # already withdrawn from once without notice, and the newest community tag there is frozen at
+  # September 2025 with no security fixes coming. Pinning to it would be borrowing time.
+  #
+  # SeaweedFS is Apache-2.0, actively maintained, and multi-arch on Docker Hub — and for the one
+  # thing this service is here to prove it is strictly better than a frozen MinIO: an independent
+  # implementation is a second opinion on the hand-rolled signature rather than a fixed one. It
+  # was checked against the forge's own adapter before landing: the correct secret round-trips a
+  # bundle, a wrong one is rejected at PUT.
+  objects:
+    image: chrislusf/seaweedfs:4.46
+    # `server -s3` runs master, volume, filer and the S3 gateway in one process — the whole point
+    # being that the stack gets object storage without a second machine's worth of moving parts.
+    #
+    # Only the S3 port answers on the network. Master (9333), volume (8080) and filer (8888)
+    # serve unauthenticated reads and writes of every object, so they and their gRPC ports bind to
+    # loopback (-ip, -ip.bind) and talk to each other there; -s3.ip.bind opens S3 alone. Without
+    # it weed binds S3 to loopback plus the ONE primary interface address, and no other container
+    # reaches it (it looks like a DNS problem and is not). The Iceberg and Lance catalogs are off:
+    # nothing here uses them.
+    #
+    # S3's gRPC port (19000) follows -s3.ip.bind and carries an IAM cache API that adds identities.
+    # Without a filer signing key weed answers it for anyone; WEED_JWT_FILER_SIGNING_KEY below
+    # makes it demand a token signed with that key.
+    command: ["server", "-dir=/data", "-s3", "-s3.port=9000", "-ip=127.0.0.1", "-ip.bind=127.0.0.1", "-s3.ip.bind=0.0.0.0", "-s3.port.iceberg=0", "-s3.port.lance=0"]
+    environment:
+      # weed's S3 gateway takes its sole admin identity from these two. With NEITHER set it serves
+      # anonymously — and an object store that waves unsigned requests through would quietly
+      # hollow out the one check in this file that no unit test can make. They are the AWS-named
+      # variables because that is what weed reads; the values are the same stack credentials.
+      AWS_ACCESS_KEY_ID: ${RYPH_S3_ACCESS_KEY_ID:?run bun run compose:init}
+      AWS_SECRET_ACCESS_KEY: ${RYPH_S3_SECRET_ACCESS_KEY:?run bun run compose:init}
+      # weed reads security.toml keys from WEED_-prefixed variables. Held by this container alone.
+      WEED_JWT_FILER_SIGNING_KEY: ${RYPH_OBJECTS_SIGNING_KEY:?run bun run compose:init}
+    volumes:
+      - objects-data:/data
+    ports:
+      # Published for one reason: smoke.ts drives the forge's own S3 adapter against this
+      # from the host, which is the only way to find out whether a real S3 implementation accepts
+      # the hand-rolled SigV4 signature. Nothing else on the host needs it.
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      # /healthz on the S3 port, not `GET /` — an unauthenticated read of the root is a 403 here,
+      # which is correct behaviour and would still read as a failing probe.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # The bucket, made once. Same shape as the schema jobs below and for the same reason: N
+  # replicas each creating it at boot is a race, and it is not the service's job anyway.
+  #
+  # weed WOULD create it implicitly on the forge's first PUT, and the job is kept anyway: real S3
+  # does not, so a stack that leaned on auto-creation would stop modelling the deployment it
+  # exists to stand in for. `s3.bucket.create` talks to the master rather than the S3 API, so it
+  # needs no credentials, and it exits 0 on a bucket that is already there — which it must, since
+  # this runs on every `compose up`. The master listens on loopback only, so the job joins the
+  # objects container's network namespace and dials it there.
+  #
+  # The image's own `shell` subcommand, rather than an `sh -c … | weed shell` of our own: the
+  # entrypoint drops root to the `seaweed` user before it dispatches, so overriding it to get a
+  # pipe would hand this job the one privilege the image is at pains to give up. SHELL_MASTER is
+  # the wrapper's way of spelling -master.
+  create-bucket:
+    image: chrislusf/seaweedfs:4.46
+    network_mode: "service:objects"
+    environment:
+      SHELL_MASTER: 127.0.0.1:9333
+    command: ["shell", "s3.bucket.create -name ryph-patches"]
+    # The image declares a volume at /data, and a service that mounts nothing there gets an
+    # anonymous volume that outlives `compose:down`. The job talks to the master and keeps nothing,
+    # so /data is memory that goes with the container.
+    tmpfs:
+      - /data
+    depends_on:
+      objects: { condition: service_healthy }
+    restart: "no"
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ryph
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run bun run compose:init}
+      POSTGRES_DB: ryph
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # The init-databases config above. Runs ONCE, on an empty data directory: after a `compose up`
+    # the volume is initialised, so editing it later does nothing until `bun run compose:reset`
+    # takes the volume with it.
+    configs:
+      - source: init-databases
+        target: /docker-entrypoint-initdb.d/10-databases.sql
+    ports:
+      # 5433, not 5432: a developer running this almost certainly has a Postgres of their own.
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      # Over TCP, not the default Unix socket: on a fresh volume the image first runs a
+      # socket-only server for the init scripts, and a socket check passes against it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ryph -d ryph"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ── schema ───────────────────────────────────────────────────────────────────────────────────
+  # ONE one-shot job per schema owner, not one for all, and that is the point rather than an
+  # inconvenience. Each schema lives in the image of the service that owns it; a single job would
+  # need an image carrying every schema file at once, which is precisely the host image the split
+  # deleted.
+  #
+  # They are jobs and not entrypoint steps because N replicas migrating at boot race each other.
+  # Each service probes its database on startup and exits naming the fix if the schema is absent,
+  # so a stack brought up without these does not limp — it stops.
+  #
+  # Each applies its owner's committed migration set (packages/<owner>/drizzle, copied into the
+  # image) with `drizzle-kit migrate`, which records what ran in that set's own table and runs only
+  # what is new. Never `push`: it diffs the live database against the schema, and forced — the only
+  # way it runs without a terminal — it approves dropping data.
+  migrate-control-plane:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-control-plane:${RYPH_VERSION:-edge}
+    entrypoint: ["bun", "--no-env-file", "node_modules/drizzle-kit/bin.cjs", "migrate"]
+    working_dir: /app/packages/orchestrator
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  migrate-historian:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-historian:${RYPH_VERSION:-edge}
+    entrypoint: ["bun", "--no-env-file", "node_modules/drizzle-kit/bin.cjs", "migrate"]
+    working_dir: /app/packages/historian
+    environment:
+      RYPH_HISTORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_history
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  migrate-model-proxy:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-model-proxy:${RYPH_VERSION:-edge}
+    entrypoint: ["bun", "--no-env-file", "node_modules/drizzle-kit/bin.cjs", "migrate"]
+    working_dir: /app/packages/model-proxy
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_keys
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Like migrate-webhooks below, this job also CREATES its database first: the init-databases
+  # config only fires on an empty data directory, and a stack whose volume predates the gateway
+  # must keep coming up without a compose:reset.
+  migrate-mcp-gateway:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-mcp-gateway:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/mcp-gateway
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_mcp
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # The newest owner, so like the gateway's it CREATES its database first for stacks whose
+  # volumes predate it.
+  migrate-memory:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-memory:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/memory
+    environment:
+      RYPH_MEMORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_memory
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # The chat service's, the same way: its database first, then its set.
+  migrate-chat:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-chat:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/chat
+    environment:
+      RYPH_CHAT_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_chat
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Unlike its older siblings, this job also CREATES its database first: the init-databases
+  # config only fires on an empty data directory, and the forge (which every run's clone crosses)
+  # must keep booting on stacks whose volumes predate the webhooks module.
+  migrate-webhooks:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-forge:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/webhooks
+    environment:
+      # The module's own variable, not the forge's: this job migrates @ryph/webhooks' table
+      # into whichever database the host gave it, and that host happens to be the forge.
+      RYPH_WEBHOOKS_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_forge
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Creates its database too (the init-databases config predates this service), then applies the
+  # automations set — which carries the automations tables and the mailroom's webhooks table,
+  # since here that table lives in ryph_automations rather than ryph_forge.
+  migrate-automations:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-automations:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/automations
+    environment:
+      RYPH_AUTOMATIONS_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_automations
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # The bridge's own database, holding the event cursors it advances after each enqueue. Behind
+  # the `radicle` profile like the two services it serves, so the default stack neither builds
+  # the image nor creates the database. Creates the database first, like every job added after
+  # the init-databases config was written.
+  migrate-radicle:
+    profiles: ["radicle"]
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-radicle:${RYPH_VERSION:-edge}
+    entrypoint: ["sh", "-c", "bun --no-env-file scripts/ensure_database.ts && bun --no-env-file node_modules/drizzle-kit/bin.cjs migrate"]
+    working_dir: /app/packages/radicle
+    environment:
+      RYPH_RADICLE_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_radicle
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # ── services ─────────────────────────────────────────────────────────────────────────────────
+  # The artifact sanitizer supervisor: the control-plane image as its own uid, in its own PID
+  # namespace, so a sanitizer process can never signal the control plane (images/control-plane/
+  # sanitizer.sh). Nothing secret is handed to it.
+  sanitizer:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-control-plane:${RYPH_VERSION:-edge}
+    entrypoint: ["/sanitizer.sh"]
+    user: sanitizer
+    <<: *read-only
+    volumes:
+      - sanitizer-socket:/run/ryph-sanitizer
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD-SHELL", "test \"$$(stat -c %a /run/ryph-sanitizer/s/supervisor.sock)\" = 660"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # A networkless renderer: the Unix socket is its only door, mounted only by control-plane.
+  artifact-thumbnails:
+    # Its own variable and not RYPH_BROWSER_IMAGE, which can be `off`: thumbnails stay on either way.
+    image: ${RYPH_ARTIFACT_THUMBNAIL_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-browser:${RYPH_VERSION:-edge}}
+    entrypoint: ["bun", "run", "src/thumbnail.ts"]
+    working_dir: /app/packages/browser
+    user: "1994:1994"
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      # Same pinned namespace-aware profile embedded in the local binary.
+      - seccomp=../../packages/host/src/thumbnail_seccomp.json
+    cpus: 1
+    mem_limit: 1g
+    pids_limit: 512
+    shm_size: 128m
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - thumbnail-socket:/run/ryph-thumbnails
+    environment:
+      HOME: /tmp
+      RYPH_THUMBNAIL_SOCKET: /run/ryph-thumbnails/render.sock
+      RYPH_THUMBNAIL_SANDBOX: required
+      # Docker's client config may otherwise inject authenticated proxy URLs.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      FTP_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ftp_proxy: ""
+      all_proxy: ""
+      no_proxy: ""
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://localhost/health', {unix:'/run/ryph-thumbnails/render.sock'}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+    stop_grace_period: *stop-grace
+  # The docker launcher (packages/launcher): the ONLY container here that mounts the docker
+  # socket, which is root on this machine, and it holds no platform secret — no master key, no
+  # database, no provider key. The control plane and the gateway reach it on :7470 with a token
+  # each; nothing publishes it, and no run can reach it (the gate does not relay it).
+  #
+  # Everything about a container that could reach past it is decided HERE, from this environment,
+  # never by a request: the deployment network, the run network and its gate, the gate's routes,
+  # the OCI runtime, the tools network. A compromised control plane can ask for a run on an image
+  # it names; it cannot ask for a mount, a capability, a published port or another network.
+  launcher:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-launcher:${RYPH_VERSION:-edge}
+    # tini as PID 1: it starts docker, git and buildx processes, and something has to reap them.
+    init: true
+    <<: *read-only
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # The socket is root:docker (root:root on Docker Desktop), mode 660: membership of its group
+    # is what lets the launcher use it. Find yours with `stat -c %g /var/run/docker.sock` on Linux.
+    group_add:
+      - "${DOCKER_GID:-0}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - launcher-home:/var/lib/ryph-launcher
+      - launcher-cache:/var/cache/ryph-launcher
+      - launcher-temp:/var/tmp/ryph-launcher
+    environment:
+      <<: [*launcher-token, *launcher-tools-token, *run-images, *builds-and-checks, *logging]
+      RYPH_LAUNCHER_PORT: 7470
+      # The deployment network: where the gate is created and every route's target resolves, and
+      # the deployment's identity (the gate is `ryph-gate-ryph`, the labels say `ryph`).
+      RYPH_DOCKER_NETWORK: ryph
+      # The internal network every run, check and build joins instead, which the launcher makes on
+      # first use with no route out and no gateway on the docker host (Docker Engine 28 or later),
+      # and refuses to use if it finds one that has either.
+      RYPH_DOCKER_RUN_NETWORK: ryph-runs-ryph
+      RYPH_DOCKER_GATE_IMAGE: ${RYPH_DOCKER_GATE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-run-gate:${RYPH_VERSION:-edge}}
+      # What a run can reach of this deployment, and all of it: each `<listen>=<service>:<port>` is
+      # one address the services hand a run, on the gate. Derived from what a run is handed:
+      #   7411 control-plane   RYPH_ORCHESTRATOR_URL (the control plane's RYPH_PUBLIC_URL)
+      #   7412 forge           RYPH_GIT_ORIGIN, the git gateway (RYPH_GIT_GATEWAY_URL)
+      #   7413 historian       RYPH_RUN_HISTORY_URL, where the runner posts its transcript
+      #   7420 model-proxy     the model base URL in a run's credentials (RYPH_MODEL_PROXY_URL)
+      #   7430 mcp-gateway     every MCP server URL in a run's credentials (RYPH_MCP_GATEWAY_URL)
+      #   7460 egress-proxy    RYPH_EGRESS_PROXY, a run's and a build's one way out
+      #   7491 previews        the runner's preview tunnel (RYPH_RUN_PREVIEWS_URL, scheme swapped)
+      # Not :7421 or :7431, the internal listeners, and nothing else: no app, no memory, no chat,
+      # no automations, no launcher, no postgres. A service added here that runs dial needs its
+      # route added too. Only the control plane checks: its boot log names any of ITS run
+      # addresses the routes miss; the model proxy's and the gateway's own are not checked.
+      RYPH_DOCKER_GATE_ROUTES: 7411=control-plane:7411,7412=forge:7412,7413=historian:7413,7420=model-proxy:7420,7430=mcp-gateway:7430,7460=egress-proxy:7460,7491=previews:7491
+      # A sandboxed runtime for runs (runsc, kata-runtime) where the engine has one; Linux only.
+      RYPH_DOCKER_RUNTIME: ${RYPH_DOCKER_RUNTIME:-}
+      # Hosted MCP servers' network (above), internal, which the launcher makes. Their guard is
+      # created on `ryph`, where the gateway dials it by name (`joined`), and runs this image and
+      # no other.
+      RYPH_TOOL_NETWORK: ryph-tools-ryph
+      RYPH_TOOL_GUARD_IMAGE: ${RYPH_TOOL_GUARD_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-tool-guard:${RYPH_VERSION:-edge}}
+      # Their one way to the internet: the egress relay (RYPH_DOCKER_GATE_IMAGE's) to the egress
+      # proxy's tool listener. `off` leaves them none.
+      RYPH_TOOL_EGRESS_TARGET: egress-proxy:7461
+      # The environment builder's working set, on the volumes above.
+      RYPH_ENV_CACHE_DIR: /var/cache/ryph-launcher
+      RYPH_ENV_TEMP_DIR: /var/tmp/ryph-launcher
+      # Every image above, fetched one at a time at boot so the first run does not wait on a
+      # several-GB pull. off leaves each to its first launch.
+      RYPH_IMAGE_PREFETCH: ${RYPH_IMAGE_PREFETCH:-on}
+      # Under RYPH_DOCKER_RUNTIME, a build (privileged BuildKit, runc) never gets the runs'
+      # sandbox, so the launcher refuses every build: whether one is of the default branch is the
+      # control plane's word, which it does not take unless this is on.
+      RYPH_ENV_TRUST_DEFAULT_BRANCH: ${RYPH_ENV_TRUST_DEFAULT_BRANCH:-off}
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7470/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    # Past its drain (RYPH_DRAIN_DEADLINE_MS, 40 s), which outlasts a run's 30 s docker stop.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  control-plane:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-control-plane:${RYPH_VERSION:-edge}
+    <<: *read-only
+    # The helpers' sockets, read-only: connecting needs no more.
+    group_add: ["1994"]
+    volumes:
+      - sanitizer-socket:/run/ryph-sanitizer:ro
+      - type: volume
+        source: thumbnail-socket
+        target: /run/ryph-thumbnails
+        read_only: true
+        volume:
+          nocopy: true
+    environment:
+      # The hub: an end of every service link in this file but the gateway→memory, gateway→chat
+      # and gateway→launcher ones.
+      <<: [*forge-token, *history-token, *model-proxy-token, *mcp-gateway-token, *automations-token, *memory-token, *chat-token, *platform-token, *previews-token, *launcher-token, *run-images, *builds-and-checks, *logging]
+      RYPH_ARTIFACT_THUMBNAIL_SOCKET: /run/ryph-thumbnails/render.sock
+      RYPH_PORT: 7411
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph
+      # Where the peers are, as THIS process dials them.
+      RYPH_MODEL_PROXY_CONTROL_URL: http://model-proxy:7421
+      # The background model's data plane, for the titles of tasks nobody named: a platform
+      # credential (RYPH_PLATFORM_TOKEN) minted on the control listener, spent here.
+      RYPH_MODEL_PROXY_DATA_URL: http://model-proxy:7420
+      RYPH_MCP_GATEWAY_CONTROL_URL: http://mcp-gateway:7431
+      # The historian as this process dials it to conclude a run: directly, on this network.
+      RYPH_HISTORY_URL: http://historian:7413
+      # And as a run posts its transcript: through the gate, which relays it to historian:7413.
+      RYPH_RUN_HISTORY_URL: http://ryph-gate-ryph:7413
+      RYPH_MEMORY_URL: http://memory:7440
+      RYPH_CHAT_URL: http://chat:7450
+      RYPH_FORGE_URL: http://forge:7412
+      # The previews service's API listener, as this process dials it: directly. The gate has no
+      # route to it, so no run reaches it.
+      RYPH_PREVIEWS_URL: http://previews:7493
+      # The base of the tunnel URL a runner is handed (ws://ryph-gate-ryph:7491/tunnel/<ticket>):
+      # the service's tunnel listener through the gate, which relays it to previews:7491.
+      RYPH_RUN_PREVIEWS_URL: http://ryph-gate-ryph:7491
+      RYPH_FORGE_TOOLS: ${RYPH_FORGE_GATEWAY_TOKEN:+on}
+      # The web tools are wired on the gateway (RYPH_WEB_URL there); this process is told, so it
+      # can put the row in every tool-capable agent's frozen scope — and it checks the gateway
+      # really holds the row before it does.
+      RYPH_WEB_TOOLS: on
+      # Where the peers are, as an AGENT CONTAINER dials them: the run gate, on the port the gate
+      # relays to each (RYPH_DOCKER_GATE_ROUTES on the launcher). A run is on the internal run
+      # network and resolves no other name; the boot log warns of any address that misses the gate.
+      RYPH_PUBLIC_URL: http://ryph-gate-ryph:7411
+      # The web app's origin as a BROWSER reaches it — the run links embedded in progress
+      # comments. Matches the app service's ORIGIN below.
+      RYPH_APP_URL: ${RYPH_APP_ORIGIN:-http://localhost:3000}
+      # Outbound mail for verification and reset links. Both or neither; unset, the links are
+      # shown to an admin in the UI instead.
+      RYPH_SMTP_URL: ${RYPH_SMTP_URL:-}
+      RYPH_MAIL_FROM: ${RYPH_MAIL_FROM:-}
+      RYPH_GIT_GATEWAY_URL: http://ryph-gate-ryph:7412
+      # An environment build clones in the LAUNCHER, which is on this network and not a run's: it
+      # dials the forge by name. (Unset, the docker builder would take RYPH_FORGE_URL, the same
+      # address; said outright because the two readers are different containers.)
+      RYPH_ENV_GIT_GATEWAY_URL: http://forge:7412
+      # Auth is MOUNTED here (the control plane is orchestrator plus auth), so RYPH_AUTH_URL is
+      # deliberately unset: setting it would mean verifying against someone else's issuer. The
+      # sibling services point theirs at this process.
+      #
+      # The browser sidecar's caps, for a browser agent's run; unset,
+      # docker's own.
+      RYPH_BROWSER_CPUS: ${RYPH_BROWSER_CPUS:-}
+      RYPH_BROWSER_MEMORY: ${RYPH_BROWSER_MEMORY:-}
+      # Size classes an admin picks per repo or workspace, applied as docker's caps.
+      RYPH_RUN_SIZES: ${RYPH_RUN_SIZES:-standard}
+      # Service containers a repo's .ryph/ declares (a database beside a run), off unless set to
+      # on: the run pulls and starts images named in the repo's tree. Empty is off.
+      RYPH_SERVICES: ${RYPH_SERVICES:-}
+      # Environment builds and checks
+      # (packages/orchestrator/docs/checks.md) are on, both run by the launcher (x-builds-and-checks
+      # above): a repo's environment image is built in a privileged BuildKit container on an
+      # internal network of its own behind the same gate, and check suites run on it. Build logs and check logs go to the object store below.
+      # The operator's run limits (packages/orchestrator/docs/development.md), passed through so a
+      # deployment sets them in its environment; unset, the code defaults apply.
+      RYPH_RUN_MAX_WALL_CLOCK_MS: ${RYPH_RUN_MAX_WALL_CLOCK_MS:-}
+      RYPH_RUN_MAX_SPEND_USD: ${RYPH_RUN_MAX_SPEND_USD:-}
+      RYPH_RUN_MAX_CALLS_IN_FLIGHT: ${RYPH_RUN_MAX_CALLS_IN_FLIGHT:-}
+      RYPH_RUN_CONCURRENCY: ${RYPH_RUN_CONCURRENCY:-}
+      RYPH_RUN_MAX_CREDENTIALS: ${RYPH_RUN_MAX_CREDENTIALS:-}
+      # Runs, checks and builds go through the launcher below, the one container with the socket.
+      RYPH_PROVISIONER: docker
+      RYPH_LAUNCHER_URL: http://launcher:7470
+      # Egress: the proxy below, and the key that signs each run's allowlist claim (it verifies
+      # with the same value). A run reaches it through the gate, and it is a run's only way to the
+      # internet: the run network has no route out, so a run that ignores the proxy reaches
+      # nothing. Builds take the same way out.
+      RYPH_EGRESS_PROXY_URL: http://ryph-gate-ryph:7460
+      RYPH_EGRESS_KEY: ${RYPH_EGRESS_KEY:?run bun run compose:init}
+      # The app below sends the same value: a client address counts only beside it. Runs reach this
+      # process through the gate, so without it a run could pick the address its rate limits are
+      # keyed on.
+      RYPH_PROXY_SECRET: ${RYPH_PROXY_SECRET:?run bun run compose:init}
+      # A run's images (the run page's uploads, a chat's photos, a thread's screenshots), build logs
+      # and check logs live in the forge's bucket under their own prefixes, beside the patches: the
+      # same store and the same keys, so every replica serves what another one took in.
+      RYPH_PATCH_STORE: s3
+      RYPH_S3_ENDPOINT: http://objects:9000
+      RYPH_S3_BUCKET: ryph-patches
+      RYPH_S3_REGION: ${RYPH_S3_REGION:-us-east-1}
+      RYPH_S3_ACCESS_KEY_ID: ${RYPH_S3_ACCESS_KEY_ID:?run bun run compose:init}
+      RYPH_S3_SECRET_ACCESS_KEY: ${RYPH_S3_SECRET_ACCESS_KEY:?run bun run compose:init}
+    ports:
+      - "127.0.0.1:7411:7411"
+    depends_on:
+      migrate-control-plane: { condition: service_completed_successfully }
+      create-bucket: { condition: service_completed_successfully }
+      # Healthy, not merely started: at boot this process asks the gateway whether it holds the
+      # platform web (and forge) rows, and a gateway that has not seeded them yet would answer
+      # "no". It waits and retries either way (packages/orchestrator/src/helpers/
+      # platform_server.ts), but starting in the right order costs nothing and keeps a cold
+      # `compose:up` quiet.
+      mcp-gateway: { condition: service_healthy }
+      sanitizer: { condition: service_healthy }
+      # Asked at boot whether it confines runs, what its gate is called and what it relays, and
+      # where the boot reconcile starts (it waits for the launcher to answer). Kept for the life of
+      # the process, so a recreated launcher restarts this one (`restart: true`). Started, not
+      # healthy: the launcher is healthy only while docker answers it, and a wrong DOCKER_GID must
+      # not keep the control plane down too; it boots and says loudly that docker is unreachable.
+      launcher: { condition: service_started, restart: true }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7411/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  historian:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-historian:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*history-token, *logging]
+      RYPH_HISTORY_PORT: 7413
+      RYPH_HISTORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_history
+      # Run tokens are the control plane's to verify; this service owns no run rows.
+      RYPH_ORCHESTRATOR_URL: http://control-plane:7411
+      # Reads verify the SAME JWKS the control plane serves, which is what lets the app forward
+      # one user bearer to whichever service owns the path.
+      RYPH_AUTH_URL: http://control-plane:7411
+    ports:
+      - "127.0.0.1:7413:7413"
+    depends_on:
+      migrate-historian: { condition: service_completed_successfully }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7413/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  memory:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-memory:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*memory-token, *memory-gateway-token, *platform-token, *logging]
+      RYPH_MEMORY_PORT: 7440
+      RYPH_MEMORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_memory
+      # The management surface verifies the SAME JWKS the control plane serves, which is what
+      # lets the app forward one user bearer here too.
+      RYPH_AUTH_URL: http://control-plane:7411
+      # The platform's model, for the consolidator and the ingest extractor: a credential minted
+      # on the proxy's control listener, spent on its data plane. Which key it spends is set under
+      # Model keys in the app; until then both run without a model and say so.
+      RYPH_MODEL_PROXY_URL: http://model-proxy:7420
+      RYPH_MODEL_PROXY_CONTROL_URL: http://model-proxy:7421
+      # Hybrid search from the weights baked into the image (images/memory/Dockerfile).
+      RYPH_MEMORY_EMBEDDINGS: ${RYPH_MEMORY_EMBEDDINGS:-local}
+      # The GitLab instance a repo-file ingest may read beside gitlab.com's.
+      RYPH_GITLAB_URL: ${RYPH_GITLAB_URL:-}
+    ports:
+      - "127.0.0.1:7440:7440"
+    depends_on:
+      migrate-memory: { condition: service_completed_successfully }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7440/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  chat:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-chat:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*chat-token, *chat-gateway-token, *logging]
+      RYPH_CHAT_PORT: 7450
+      RYPH_CHAT_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_chat
+      # Seals BOT TOKENS — the fourth master key, this process's alone; a leaked control plane
+      # cannot open a room's bot.
+      RYPH_CHAT_KEY: ${RYPH_CHAT_KEY:?run bun run compose:init}
+      # The management surface verifies the SAME JWKS the control plane serves, which is what
+      # lets the app forward one user bearer here too.
+      RYPH_AUTH_URL: http://control-plane:7411
+      # Where a room's mentions go: the run's inbox, on the control plane's chat surface.
+      RYPH_ORCHESTRATOR_URL: http://control-plane:7411
+    ports:
+      - "127.0.0.1:7450:7450"
+    depends_on:
+      migrate-chat: { condition: service_completed_successfully }
+      control-plane: { condition: service_started }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7450/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  model-proxy:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-model-proxy:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*model-proxy-token, *platform-token, *logging]
+      RYPH_MODEL_PROXY_PORT: 7420
+      RYPH_MODEL_PROXY_CONTROL_PORT: 7421
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_keys
+      # The provider-key master, held by this process and no other.
+      RYPH_SECRETS_KEY: ${RYPH_SECRETS_KEY:?run bun run compose:init}
+      # What an AGENT CONTAINER dials as its provider: the DATA listener, through the run gate,
+      # which relays :7420 here and never :7421.
+      RYPH_MODEL_PROXY_URL: http://ryph-gate-ryph:7420
+      RYPH_AUTH_URL: http://control-plane:7411
+      # Where this process may dial a CUSTOM model endpoint. Off, a registered base URL must be
+      # https and must not name a loopback, link-local or private-range address — which on a
+      # laptop is exactly the Ollama or vLLM on your LAN, so set this to 1 in the environment to
+      # register one. It is the only boundary here: on a real deployment the pod's NetworkPolicy
+      # excepts every private range as well, and a compose network cannot (see above).
+      RYPH_ALLOW_PRIVATE_MODEL_ENDPOINTS: ${RYPH_ALLOW_PRIVATE_MODEL_ENDPOINTS:-}
+      # The deployment's spend ceiling and the proxy's backstop grace, passed through the same
+      # way (packages/model-proxy/README.md); unset, no ceiling.
+      RYPH_MODEL_SPEND_CEILING_USD: ${RYPH_MODEL_SPEND_CEILING_USD:-}
+      RYPH_MODEL_SPEND_WINDOW_DAYS: ${RYPH_MODEL_SPEND_WINDOW_DAYS:-}
+      RYPH_MODEL_SPEND_BACKSTOP_MS: ${RYPH_MODEL_SPEND_BACKSTOP_MS:-}
+    # Neither listener is published. :7421 is for the control plane and for the app's proxy, both on
+    # this network, and :7420 is for agent containers, through the gate. Nothing on the host needs
+    # either, and the one a person uses (key management) is reached through the app.
+    depends_on:
+      migrate-model-proxy: { condition: service_completed_successfully }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7421/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  web:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-web:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*web-gateway-token, *logging]
+      RYPH_WEB_PORT: 7480
+      # The search key, if this deployment has one. Without it the service starts anyway and
+      # offers `web__fetch` alone — which is the whole of what a key buys: the `search` tool.
+      RYPH_WEB_SEARCH_PROVIDER: ${RYPH_WEB_SEARCH_PROVIDER:-brave}
+      RYPH_WEB_SEARCH_KEY: ${RYPH_WEB_SEARCH_KEY:-}
+    # Published for `bun run compose:smoke`, which probes /readyz like every other service.
+    ports:
+      - "127.0.0.1:7480:7480"
+    # Nothing to migrate and nothing to wait for: this service has no database.
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7480/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # Hosted previews: a dev server an agent runs, opened in a
+  # browser at http://<id>.preview.localhost:7490 — every `.localhost` name is loopback to a
+  # browser, so the published port is the whole front door. :7491 is the runners' tunnels (through
+  # the gate) and :7493 the control plane's /internal/*; neither is published. A run reaches :7491
+  # alone, through the gate; among the services every port answers, and the token and the
+  # one-time tickets are what hold there, as the header says of every internal surface.
+  previews:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-previews:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*previews-token, *logging]
+      RYPH_PREVIEWS_PORT: 7490
+      RYPH_PREVIEWS_TUNNEL_PORT: 7491
+      RYPH_PREVIEWS_API_PORT: 7493
+      # `http`, because the domain is `.localhost`; and the published port, because it is part of
+      # every preview's origin and the service checks Host against it.
+      RYPH_PREVIEWS_DOMAIN: preview.localhost
+      RYPH_PREVIEWS_PUBLIC_PORT: 7490
+      # Where a link opened without the viewer cookie goes for a ticket: the app service's ORIGIN.
+      RYPH_PREVIEWS_APP_URL: ${RYPH_APP_ORIGIN:-http://localhost:3000}
+    # Every socket's kernel buffers at 128 KiB each way, as the chart's pods have them: they count
+    # against the memory limit, and the kernel's own ceilings (some 4 and 6 MiB) would let a page
+    # that never reads pin far more, faster than the service samples its memory. Both are per
+    # network namespace, which Docker sets per container.
+    sysctls:
+      net.ipv4.tcp_rmem: "4096 32768 131072"
+      net.ipv4.tcp_wmem: "4096 16384 131072"
+    # The limit the service measures itself against (its cgroup's memory.max). Past 3/4 of it,
+    # when what the runs hold explains at least half of its growth since before it was pressed,
+    # the runs holding at least the mean of theirs (and 1 MiB) are refused and lose every stream
+    # holding bytes; past 9/10 it refuses everyone and closes streams. Without a limit it is
+    # guarded by nothing but its counts. A service stuck (at least a minute past 9/10, and the
+    # latest shed found nothing to close) fails /healthz, but the healthcheck below asks /readyz
+    # and Docker restarts no unhealthy container, so here nothing restarts it for that. The
+    # chart's README, "Sizing previews", has the rest.
+    #
+    # Every run's tunnel reaches :7491 through the run gate, so from ONE source address. The tunnel
+    # listener holds connections that have not dialled a tunnel yet to 64 from one address and 256
+    # in all, each for 5 s, a silent one closed to make room for a new one. Behind one address
+    # nothing tells the runs apart: a run that floods :7491 with connections and says nothing
+    # churns through every run's silent ones, so another run's dial whose request has not arrived
+    # yet may be closed, or refused, and its runner dials again on its backoff. One run can keep the
+    # others' tunnels down here while it floods (they come back once it stops), and never reach the
+    # control plane's calls (:7493, which the gate does not relay). Telling runs apart behind the gate needs it to say
+    # who each connection is (the PROXY protocol, say): a follow-up.
+    mem_limit: 768m
+    ports:
+      - "127.0.0.1:7490:7490"
+    # Nothing to migrate and nothing to wait for: its state is the open tunnels, in memory.
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7490/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  mcp-gateway:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-mcp-gateway:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*mcp-gateway-token, *memory-gateway-token, *chat-gateway-token, *web-gateway-token, *forge-gateway-token, *launcher-tools-token, *egress-tool-key, *logging]
+      RYPH_MCP_GATEWAY_PORT: 7430
+      RYPH_MCP_GATEWAY_CONTROL_PORT: 7431
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_mcp
+      # The MCP-credential master, held by this process and no other — the third key, beside the
+      # model-proxy's and the control plane's, one per secret class.
+      RYPH_MCP_KEY: ${RYPH_MCP_KEY:?run bun run compose:init}
+      # What an AGENT CONTAINER dials as its "MCP server": the DATA listener, through the run gate,
+      # which relays :7430 here and never :7431.
+      RYPH_MCP_GATEWAY_URL: http://ryph-gate-ryph:7430
+      RYPH_AUTH_URL: http://control-plane:7411
+      # The platform's memory server: the gateway seeds its row at boot and forwards every run's
+      # memory tool calls here, with the token above and the run's id — nothing a container set.
+      RYPH_MEMORY_URL: http://memory:7440
+      # The platform's chat server, the same way, for a run a response bound to a chatroom.
+      RYPH_CHAT_URL: http://chat:7450
+      # The platform's web server, the same way: search and page reads for every run.
+      RYPH_WEB_URL: http://web:7480
+      # The platform's forge server, only when forge tools are on (see x-forge-gateway-token).
+      RYPH_FORGE_TOOLS_URL: ${RYPH_FORGE_GATEWAY_TOKEN:+http://forge:7412}
+      # Hosted MCP servers (the catalogue's vendor containers), through the launcher with the
+      # tools token, which opens its tool-host routes and nothing else. The launcher puts them on
+      # ryph-tools-ryph, which this container never joins, and their tool guard on `ryph` too,
+      # where this dials it by name; nothing is published. The guard's image is the launcher's.
+      # Every launch carries an egress claim signed with RYPH_EGRESS_TOOL_KEY (above).
+      RYPH_TOOL_HOST: launcher
+      RYPH_LAUNCHER_URL: http://launcher:7470
+    # Neither listener is published, for the model-proxy's reasons: :7431 is for the control plane
+    # and the app's proxy, :7430 for agent containers through the gate. Where the gateway itself
+    # may dial stays at the default (public https hosts only), because the servers an operator
+    # registers here are real ones on the internet, not siblings on this network. A hosted
+    # server's guard is dialled by name on this network, which hosting allows for itself.
+    depends_on:
+      migrate-mcp-gateway: { condition: service_completed_successfully }
+      # Its tools network, guard and egress relay, read once at connect (it waits for the launcher to
+      # answer): a recreated launcher restarts this. Started, not healthy, as the control plane.
+      launcher: { condition: service_started, restart: true }
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7431/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # A one-commit git repository for the stack's own checks: a task names a connected repo and
+  # nothing else, and this is one that needs no account anywhere. Made on first start into its own
+  # volume (gone with `down -v`) by the forge's image, which has git and the forge's uid, so the
+  # forge owns what it reads and lands patches in.
+  fixture-repo:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-forge:${RYPH_VERSION:-edge}
+    user: root
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ ! -d /fixtures/hello/.git ]; then
+          git init -q -b main /fixtures/hello
+          printf '# hello\n\nA fixture repository for the compose stack.\n' > /fixtures/hello/README.md
+          git -C /fixtures/hello add README.md
+          git -C /fixtures/hello -c user.name=ryph -c user.email=fixture@ryph.local \
+            commit -q -m "A fixture to work on"
+        fi
+        chown -R forge:forge /fixtures
+    volumes:
+      - fixtures:/fixtures
+    restart: "no"
+
+  forge:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-forge:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*forge-token, *forge-gateway-token, *radicle-token, *logging]
+      RYPH_FORGE_PORT: 7412
+      RYPH_FORGE_DATA: /data
+      RYPH_ORCHESTRATOR_URL: http://control-plane:7411
+      # Door ③ — the GitHub App — stays dark unless all four arrive. Doors ① and ② (clone through
+      # the gateway, bundle intake) serve regardless, which is what makes a no-account run of this
+      # stack worth something. Empty strings read as unset; see packages/forge/src/main.ts.
+      RYPH_GITHUB_APP_ID: ${RYPH_GITHUB_APP_ID:-}
+      RYPH_GITHUB_PRIVATE_KEY: ${RYPH_GITHUB_PRIVATE_KEY:-}
+      RYPH_GITHUB_CLIENT_ID: ${RYPH_GITHUB_CLIENT_ID:-}
+      RYPH_GITHUB_CLIENT_SECRET: ${RYPH_GITHUB_CLIENT_SECRET:-}
+      # Door ④ — inbound webhooks. Needs the App above AND the webhooks database below; the
+      # GitHub App's webhook URL is <RYPH_APP_ORIGIN>/v1/hooks/github, which only a front door that
+      # routes that exact path here delivers (README: "Webhooks need a front door").
+      RYPH_GITHUB_WEBHOOK_SECRET: ${RYPH_GITHUB_WEBHOOK_SECRET:-}
+      # GitLab: one instance (gitlab.com by default), a bot user's token (RYPH_GITLAB_MODE=user for
+      # one person's, which takes none of the four after it). Empty is no GitLab. Webhooks need the
+      # webhooks database below, each project with its own token derived from
+      # RYPH_GITLAB_WEBHOOK_SECRET. The repo page shows <RYPH_APP_ORIGIN>/v1/hooks/gitlab?…, the
+      # app's origin, not this service's: a front door must route that exact path here, or every
+      # delivery is the app's 404 (README: "Webhooks need a front door").
+      RYPH_GITLAB_URL: ${RYPH_GITLAB_URL:-}
+      RYPH_GITLAB_MODE: ${RYPH_GITLAB_MODE:-}
+      RYPH_GITLAB_TOKEN: ${RYPH_GITLAB_TOKEN:-}
+      RYPH_GITLAB_WEBHOOK_SECRET: ${RYPH_GITLAB_WEBHOOK_SECRET:-}
+      RYPH_GITLAB_CLIENT_ID: ${RYPH_GITLAB_CLIENT_ID:-}
+      RYPH_GITLAB_CLIENT_SECRET: ${RYPH_GITLAB_CLIENT_SECRET:-}
+      RYPH_GITLAB_GROUP: ${RYPH_GITLAB_GROUP:-}
+      # Patch bundles go to object storage, not to the volume below. This is the setting that
+      # decides whether this service can be scaled: on local disk a patch submitted through one
+      # replica simply 404s when another is asked to deliver it.
+      RYPH_PATCH_STORE: s3
+      RYPH_S3_ENDPOINT: http://objects:9000
+      RYPH_S3_BUCKET: ryph-patches
+      RYPH_S3_REGION: ${RYPH_S3_REGION:-us-east-1}
+      RYPH_S3_ACCESS_KEY_ID: ${RYPH_S3_ACCESS_KEY_ID:?run bun run compose:init}
+      RYPH_S3_SECRET_ACCESS_KEY: ${RYPH_S3_SECRET_ACCESS_KEY:?run bun run compose:init}
+      # The forge's own database, holding the mailroom's one table — ingested hook bodies
+      # (hostile internet input) do not belong beside anyone else's tables.
+      RYPH_FORGE_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_forge
+      # The SECOND forge, and it is off unless you say otherwise. Empty RYPH_RADICLE_URL means
+      # no Radicle ForgeApi is registered and no connected repo can carry provider=radicle; the
+      # token beside it is inert until a URL joins it. With the `radicle` profile running the pair
+      # of services below, this is `http://radicle:7470`:
+      #
+      #   COMPOSE_PROFILES=radicle RYPH_RADICLE_URL=http://radicle:7470 bun run compose:up
+      #
+      # (see README.md, "The Radicle forge").
+      RYPH_RADICLE_URL: ${RYPH_RADICLE_URL:-}
+      # The explorer template, read by BOTH sides of that link: the bridge renders a submitted
+      # patch's URL from it, the forge renders every other thread's, and a deployment where the
+      # two disagree shows a link on one page and none on the next. Unset by default, because
+      # Radicle has no canonical web host and a template naming no placeholder would send every
+      # patch to the same home page. A real one names them, e.g.
+      # https://app.radicle.xyz/nodes/seed.radicle.garden/{rid}/{kind}/{id}
+      RYPH_RADICLE_EXPLORER_URL: ${RYPH_RADICLE_EXPLORER_URL:-}
+      # Repositories on this machine may be connected from here: the fixture-repo volume.
+      RYPH_LOCAL_REPO_ROOT: /fixtures
+    volumes:
+      # cache/ and staging/ still live here — a repo cache miss just re-fetches, and staging is
+      # per-request scratch wiped on boot. Neither is state worth moving off the node.
+      - forge-data:/data
+      - fixtures:/fixtures
+    depends_on:
+      create-bucket: { condition: service_completed_successfully }
+      migrate-webhooks: { condition: service_completed_successfully }
+      fixture-repo: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:7412:7412"
+    healthcheck:
+      <<: *bun-ready
+      # Readiness, not /healthz: Docker restarts nothing for a failing check, and the mailroom
+      # mends a wedged tick in process (it abandons it), so liveness has no work here.
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7412/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  automations:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-automations:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*automations-token, *logging]
+      RYPH_AUTOMATIONS_PORT: 7414
+      RYPH_ORCHESTRATOR_URL: http://control-plane:7411
+      RYPH_AUTH_URL: http://control-plane:7411
+      # A response's chatroom is checked here on save (a Telegram room only), with the caller's
+      # own bearer on the chat service's management read.
+      RYPH_CHAT_URL: http://chat:7450
+      # This service's own database: the recipes, their fire history, and the mailroom's hooks
+      # table — ingested bodies (hostile internet input) do not belong beside anyone else's
+      # tables. The ingestion door, POST /v1/hooks/<automation id>, is what a user pastes into
+      # Grafana or any other sender, at PUBLIC_AUTOMATIONS_ORIGIN (this service's own port unless
+      # a front door routes /v1/hooks/ here).
+      RYPH_AUTOMATIONS_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_automations
+    depends_on:
+      migrate-automations: { condition: service_completed_successfully }
+      control-plane: { condition: service_started }
+    ports:
+      - "127.0.0.1:7414:7414"
+    healthcheck:
+      <<: *bun-ready
+      # Readiness, not /healthz: Docker restarts nothing for a failing check, and the mailroom
+      # mends a wedged tick in process (it abandons it), so liveness has no work here.
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7414/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # The one way out a run has: it terminates CONNECT, matches the hostname against the signed
+  # allowlist the run presents, and forwards or refuses. Nothing is published: a run reaches it
+  # through the gate (:7460), and nothing outside needs to. The run network has no route out, so
+  # this is not merely the route a cooperating runner takes, it is the only one there is. The
+  # same for hosted MCP servers on :7461, through their egress relay: their claims only, any
+  # public host on any port, never a private address.
+  egress-proxy:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-egress-proxy:${RYPH_VERSION:-edge}
+    environment:
+      <<: [*egress-tool-key, *logging]
+      RYPH_EGRESS_PORT: 7460
+      RYPH_EGRESS_TOOL_PORT: 7461
+      # The verifying half of the control plane's signing key — the same value, two holders.
+      RYPH_EGRESS_KEY: ${RYPH_EGRESS_KEY:?run bun run compose:init}
+      # Where a refused host is reported, so a run and a build hear what they could not reach.
+      # The only thing this container sends anywhere of ours, and it presents the refused
+      # subject's own claim to do it rather than a credential of its own.
+      RYPH_EGRESS_REPORT_URL: http://control-plane:7411
+      # Addresses neither listener ever dials. On a cloud VM, set it to this host's public
+      # addresses (comma-separated CIDRs): a hosted server may reach any public address, and this
+      # container's own interfaces say nothing of the VM's.
+      RYPH_EGRESS_DENY_CIDRS: ${RYPH_EGRESS_DENY_CIDRS:-}
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  app:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-app:${RYPH_VERSION:-edge}
+    environment:
+      PORT: 3000
+      # adapter-node needs the public origin to get form handling and CSRF right.
+      ORIGIN: ${RYPH_APP_ORIGIN:-http://localhost:3000}
+      # Behind a reverse proxy, the header it puts the browser's address on (x-forwarded-for, the
+      # XFF_DEPTH-th entry from the right). Without it every visitor arrives from docker's gateway
+      # and shares one sign-in rate limit.
+      ADDRESS_HEADER: ${RYPH_ADDRESS_HEADER:-}
+      XFF_DEPTH: ${RYPH_XFF_DEPTH:-1}
+      # adapter-node refuses a request body over 512 KiB by default; a check bundle from
+      # `ryph checks` can be up to the forge's 100 MiB cap, so the forge decides, not the app.
+      BODY_SIZE_LIMIT: 110M
+      # The upstreams the /api/v1/* proxy routes between. One user bearer works at all of them
+      # because they all verify the control plane's JWKS.
+      RYPH_API_URL: http://control-plane:7411
+      RYPH_HISTORY_URL: http://historian:7413
+      RYPH_MODEL_PROXY_CONTROL_URL: http://model-proxy:7421
+      RYPH_MCP_GATEWAY_CONTROL_URL: http://mcp-gateway:7431
+      RYPH_AUTOMATIONS_URL: http://automations:7414
+      RYPH_MEMORY_URL: http://memory:7440
+      RYPH_CHAT_URL: http://chat:7450
+      # Vouches to the control plane for the client address it forwards (same value there).
+      RYPH_PROXY_SECRET: ${RYPH_PROXY_SECRET:?run bun run compose:init}
+      # Read in the browser, so they carry no secret: the app slug builds the install URL and the
+      # client id the authorize URL. The client SECRET stays at the forge.
+      PUBLIC_GITHUB_APP_NAME: ${PUBLIC_GITHUB_APP_NAME:-}
+      PUBLIC_GITHUB_CLIENT_ID: ${PUBLIC_GITHUB_CLIENT_ID:-}
+      # GitLab sign-in: the instance the browser is sent to, and the OAuth application's id (the
+      # forge's RYPH_GITLAB_CLIENT_ID).
+      PUBLIC_GITLAB_URL: ${RYPH_GITLAB_URL:-https://gitlab.com}
+      PUBLIC_GITLAB_CLIENT_ID: ${RYPH_GITLAB_CLIENT_ID:-}
+      # The automations service's origin as a BROWSER (and the sender the user configures)
+      # reaches it — shown next to a webhook automation's ingestion path.
+      PUBLIC_AUTOMATIONS_ORIGIN: ${PUBLIC_AUTOMATIONS_ORIGIN:-http://localhost:7414}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      control-plane: { condition: service_started }
+    healthcheck:
+      # The app answers the same two probes the Bun services do, hand-written because it builds
+      # on Node and cannot import @ryph/service. Its /readyz deliberately does NOT probe the
+      # control plane: during an outage the BFF's job is to render the error, not to vanish.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # ── radicle (optional: COMPOSE_PROFILES=radicle) ─────────────────────────────────────────────
+  # The second forge, off unless asked for. Two containers, one volume mounted as RAD_HOME by
+  # both, because that is what Radicle's shape forces: `git-remote-rad` writes a patch straight
+  # into storage on the local filesystem, and the node's control socket is a file in the same
+  # tree. Hence a pair that shares a volume rather than a service that dials one.
+  #
+  #   COMPOSE_PROFILES=radicle RYPH_RADICLE_URL=http://radicle:7470 bun run compose:up
+  #
+  # COMPOSE_PROFILES and not --profile: the flag is compose's own, before the subcommand, and
+  # `bun run` appends its arguments after one.
+  #
+  # Without RYPH_RADICLE_URL on the forge the pair still runs and the forge simply has no Radicle
+  # provider — which is the useful state for working on the bridge alone. See README.md.
+  #
+  # BOTH CONTAINERS RUN AS uid 1994, pinned in both images. A different uid on either side and
+  # the control socket in the shared volume is unopenable from the other; it would look like the
+  # node is down.
+  radicle-node:
+    profiles: ["radicle"]
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-radicle-node:${RYPH_VERSION:-edge}
+    environment:
+      # The alias other people see beside ryph's patches and comments.
+      RYPH_RADICLE_ALIAS: ${RYPH_RADICLE_ALIAS:-ryph}
+      # Empty here, and that means an UNENCRYPTED key on this volume — correct for a laptop and
+      # for nowhere else. A real deployment provisions the key pair from a Secret instead (the
+      # entrypoint reads /run/secrets/radicle) and gives both containers the same passphrase.
+      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
+      # Comma-separated `<nid>@<host>:<port>`. Empty takes heartwood's own two public seeds;
+      # set it to reach a private network and nothing else.
+      RYPH_RADICLE_CONNECT: ${RYPH_RADICLE_CONNECT:-}
+      # Only when this node is reachable from outside, which on a laptop it is not.
+      RYPH_RADICLE_EXTERNAL_ADDRESS: ${RYPH_RADICLE_EXTERNAL_ADDRESS:-}
+    volumes:
+      - radicle-data:/data/radicle
+    # NO PUBLISHED PORT, deliberately. The node is outbound-only: it dials the seeds above and
+    # fetches ride the connection it opened, so nothing has to reach it. To accept inbound peers
+    # on a machine that is actually reachable, uncomment this WITH the bind spelled out — a bare
+    # `- "8776:8776"` binds every interface, which on a laptop means the office wifi.
+    #   ports:
+    #     - "0.0.0.0:8776:8776"
+    healthcheck:
+      # `rad node status --only nid` is the one form with an exit code worth reading: it prints
+      # the NID and exits 0 when the node answers on the control socket, and exits non-zero when
+      # it does not. Plain `rad node status` prints "Node is stopped." and exits 0 — measured.
+      test: ["CMD", "rad", "node", "status", "--only", "nid"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  radicle:
+    profiles: ["radicle"]
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-radicle:${RYPH_VERSION:-edge}
+    <<: *read-only
+    environment:
+      <<: [*radicle-token, *logging]
+      RYPH_RADICLE_PORT: 7470
+      # Its own database, for the cursors the event consumer advances. The table is small and
+      # the reason it is separate is the usual one: what a stranger's gossip put in it does not
+      # belong beside anyone else's rows.
+      RYPH_RADICLE_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_radicle
+      # Where a ForgeEvent goes. The mailroom (@ryph/webhooks) is mounted in the FORGE, on
+      # ryph_forge — so the bridge hands events to the forge and the forge's sweeper delivers
+      # them to the orchestrator, exactly as an inbound GitHub hook does. One link, one token:
+      # the bearer on these POSTs is RYPH_RADICLE_TOKEN above, the same credential the forge
+      # presents coming the other way.
+      # The mailbox the bridge rents there is "radicle", verified by the same bearer.
+      RYPH_RADICLE_EVENTS_URL: http://forge:7412/v1/hooks/radicle
+      # The origin patch links are built from — the same value the forge gets above. Radicle has
+      # no canonical web host, so this is a setting and is EMPTY by default: a template is a
+      # template, `{rid}`, `{kind}` and `{id}` substituted into it, and one naming none of them
+      # would point every patch at the same page. Unset, a patch simply has no URL and its id is
+      # its address. A public seed's shape:
+      # https://app.radicle.xyz/nodes/seed.radicle.garden/{rid}/{kind}/{id}
+      RYPH_RADICLE_EXPLORER_URL: ${RYPH_RADICLE_EXPLORER_URL:-}
+      # The correctness path. The node's event stream is a live channel with no replay, so a
+      # slow reconcile walks the storage refs and picks up whatever the stream dropped.
+      RYPH_RADICLE_RECONCILE_SECONDS: ${RYPH_RADICLE_RECONCILE_SECONDS:-300}
+      # The same value the node container has, or this process cannot sign with the key it can
+      # read.
+      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
+      RAD_HOME: /data/radicle
+    volumes:
+      - radicle-data:/data/radicle
+    depends_on:
+      migrate-radicle: { condition: service_completed_successfully }
+      # Not strictly required — a push is a local storage write and succeeds with the node down,
+      # only the announce is skipped — but starting in order keeps a first boot readable.
+      radicle-node: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:7470:7470"
+    healthcheck:
+      <<: *bun-ready
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://127.0.0.1:7470/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    stop_grace_period: *stop-grace
+    restart: unless-stopped
+
+  # ── the images runs launch ───────────────────────────────────────────────────────────────────
+  # Never started by compose (scale 0): the launcher starts them, by the refs above, on the
+  # socket. Listed so `docker compose pull` fetches them with everything else, ahead of the first
+  # run: the agent image and the universal image are several GB each, and a run waiting on that
+  # pull waits with it. The launcher fetches them at boot as well (RYPH_IMAGE_PREFETCH).
+  ryph-agent:
+    scale: 0
+    image: ${RYPH_AGENT_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-agent:${RYPH_VERSION:-edge}}
+  ryph-run-gate:
+    scale: 0
+    image: ${RYPH_DOCKER_GATE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-run-gate:${RYPH_VERSION:-edge}}
+  ryph-tool-guard:
+    scale: 0
+    image: ${RYPH_TOOL_GUARD_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-tool-guard:${RYPH_VERSION:-edge}}
+  # What environment builds start from: the universal image (most of it shared with the agent
+  # image) and the harness layer.
+  ryph-universal:
+    scale: 0
+    image: ${RYPH_ENV_BASE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-universal:${RYPH_VERSION:-edge}}
+  ryph-harness:
+    scale: 0
+    image: ${RYPH_HARNESS_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-harness:${RYPH_VERSION:-edge}}

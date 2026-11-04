@@ -1,0 +1,605 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+@plugin "@tailwindcss/typography";
+
+/* The brand's faces, Inter, Host Grotesk and JetBrains Mono, are open and always ship:
+   +layout.svelte imports them. Headings are always in Host Grotesk Bold, as on the landing page. */
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.52 0.105 223.128);
+  --context-usage: oklch(0.52 0.105 223.128);
+  --primary-foreground: oklch(0.984 0.019 200.873);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  /* Steps down from --card (1.0) by about the same distance dark mode steps up from its own card
+     (0.205 -> 0.269). At the stock 0.97 a muted fill was 3% off white, which reads as flat rather
+     than quiet — an inline code chip or a filled row had nothing to sit against. */
+  --muted: oklch(0.94 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  /* An outcome is green, amber or red, and the theme only had the red: --primary is the app's blue
+     and stands for "this is the action", not "this worked". These are fills with text on them, so
+     each is set at a lightness that carries its own foreground at badge size — the amber lands
+     light enough to need dark text, which is why it names one rather than assuming white. */
+  --success: oklch(0.52 0.14 149);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.79 0.15 80);
+  --warning-foreground: oklch(0.28 0.06 80);
+  /* The diff pair, as text on --card. Deliberately not --destructive: red there means the action is
+     dangerous, and a deleted line is just the other half of an edit. Held at the same lightness as
+     each other so neither count outweighs the other, and dropped below the fill colours a diff
+     paints because these two are read as small text rather than seen as a wash. */
+  --diff-added: oklch(0.52 0.14 149);
+  --diff-removed: oklch(0.52 0.19 25);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.45rem;
+  /* Under the inset layout this is not just the sidebar's fill: it is the background the whole app
+     sits on, and the page panel (--card/--background, white) floats on it. At the stock 0.985 that
+     float was a 1.5% step and read as a seam rather than a surface, so this steps down far enough
+     to be a surface in its own right while staying quiet next to the panel. The panel's border,
+     with no shadow under it, draws the edge. */
+  --sidebar: oklch(0.978 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.609 0.126 221.723);
+  --sidebar-primary-foreground: oklch(0.984 0.019 200.873);
+  /* Was kept in step with --muted, but --muted sits on white and this sits on --sidebar: sharing a
+     value cost the selected item most of its contrast the moment the surround darkened. Held one
+     step below --sidebar instead, which is the distance --muted keeps from the panel. */
+  --sidebar-accent: oklch(0.935 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  /* The brand gradient, from the logo's circle: Ryph blue, violet, orchid, teal and amber. The same
+     values as the landing page's (ryph-lp, src/app.css); keep the two in step. */
+  --brand-a: oklch(0.86 0.09 223);
+  --brand-b: oklch(0.83 0.1 285);
+  --brand-c: oklch(0.87 0.09 340);
+  --brand-d: oklch(0.9 0.09 190);
+  --brand-e: oklch(0.93 0.09 80);
+  /* A note the agent wrote down: pale legal-pad yellow, and the underside of its folded corner. */
+  --paper: oklch(0.975 0.045 95);
+  --paper-foreground: oklch(0.3 0.03 80);
+  --paper-fold: oklch(0.9 0.07 90);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.45 0.085 224.283);
+  /* The tiny context arc needs contrast against its grey track, not a button's white label. */
+  --context-usage: oklch(0.8 0.12 223);
+  --primary-foreground: oklch(0.984 0.019 200.873);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  /* Lifted just enough to stay a fill on a dark surround rather than a stain; the foregrounds do
+     not move, because what makes each readable is the fill's own lightness. */
+  --success: oklch(0.55 0.15 149);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.82 0.15 80);
+  --warning-foreground: oklch(0.28 0.06 80);
+  /* Lifted well above the light pair, the way --destructive lifts (0.577 -> 0.704): these sit on
+     --card at 0.205 now, and the light values would go muddy against it. */
+  --diff-added: oklch(0.78 0.16 150);
+  --diff-removed: oklch(0.72 0.18 23);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  /* Below --background (0.145), not above it as the stock theme has it. Light mode floats a white
+     panel on a grey surround; inverting that relationship in dark would sink the panel into the
+     page instead, and the two themes would no longer be the same layout. */
+  --sidebar: oklch(0.115 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.715 0.143 215.221);
+  --sidebar-primary-foreground: oklch(0.302 0.056 229.695);
+  /* Follows --sidebar down by the same step --muted keeps from --background. */
+  --sidebar-accent: oklch(0.225 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  --brand-a: oklch(0.5 0.12 223);
+  --brand-b: oklch(0.46 0.14 285);
+  --brand-c: oklch(0.5 0.14 340);
+  --brand-d: oklch(0.55 0.1 190);
+  --brand-e: oklch(0.6 0.1 75);
+  --paper: oklch(0.3 0.035 90);
+  --paper-foreground: oklch(0.92 0.03 95);
+  --paper-fold: oklch(0.38 0.05 88);
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans', Arimo, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+
+  /* A mark arriving: a step's check or its warning grows in with a little overshoot, so the
+     list is seen to change rather than merely found changed. */
+  --animate-pop-in: pop-in 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  /* A light passing over text, left to right, for something at work. Paired with `text-shimmer`,
+     which paints the text in the gradient the light is. */
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0% 0;
+    }
+  }
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-diff-added: var(--diff-added);
+  --color-diff-removed: var(--diff-removed);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-paper: var(--paper);
+  --color-paper-foreground: var(--paper-foreground);
+  --color-paper-fold: var(--paper-fold);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-context-usage: var(--context-usage);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --font-heading: 'Host Grotesk Variable', 'Inter Variable', Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans', Arimo, sans-serif;
+}
+
+:root {
+  /* How far the page panel's content starts below the top of the viewport from md up: the panel's
+     `m-2` plus its 1px border. The app layout paints a sticky cap this tall over the top of the
+     panel, so anything a page sticks at `top-(--panel-cap)` rests exactly where it will stick and
+     never slides those first pixels. Below md the panel is flush and there is no cap. */
+  --panel-cap: calc(0.5rem + 1px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  /* The canvas, not the page panel. Overscroll past either end of the document paints this, and so
+     does the gap a sliding view transition opens up, because neither is covered by any element —
+     both showed white while the shell around them was --sidebar. Under the inset layout --sidebar
+     is what the app sits on; --background is the panel floating on it, and the panel paints itself
+     (`Sidebar.Inset`). The flows layout lays its own backdrop over this. */
+  body {
+    @apply bg-sidebar text-foreground;
+  }
+  /* The scrollbar's room is kept whether or not the page scrolls, so going from a long page (or
+     tab) to a short one does not widen everything by a scrollbar's width and back. Where the
+     scrollbar overlays the page (macOS by default, phones) this reserves nothing. */
+  html {
+    @apply font-sans;
+    scrollbar-gutter: stable;
+  }
+}
+
+/* A list that scrolls in its own box fades out under whatever sits above it and at its bottom
+   edge, rather than being cut off. The fades' depths, animated by the list's own scroll. At the
+   top, none: the first row sits sharp under the header at rest, and the fade comes in as the list
+   scrolls as far as it is deep. At the bottom, the other way round: full while there is more
+   below, gone as the last row arrives. Registered so they interpolate. A list too short to scroll has no timeline and keeps the
+   initial values, so no fade at either end; a browser without scroll-driven animations keeps the
+   hard edges rather than fades over the first and last rows that never go away. */
+/* shadcn-svelte also supplies these utility names, with permanent fallback masks. Override
+   those defaults outside @supports so unsupported browsers really do keep hard edges. */
+.scroll-fade-y,
+.scroll-fade-x {
+  mask-image: none;
+}
+
+@property --scroll-fade-y-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-fade-y-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes scroll-fade-y-top {
+  to {
+    --scroll-fade-y-top: 2rem;
+  }
+}
+
+@keyframes scroll-fade-y-bottom {
+  from {
+    --scroll-fade-y-bottom: 2rem;
+  }
+  to {
+    --scroll-fade-y-bottom: 0px;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  .scroll-fade-y {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black var(--scroll-fade-y-top),
+      black calc(100% - var(--scroll-fade-y-bottom)),
+      transparent
+    );
+    animation:
+      scroll-fade-y-top linear both,
+      scroll-fade-y-bottom linear both;
+    animation-timeline: scroll(self), scroll(self);
+    animation-range:
+      0 2rem,
+      calc(100% - 2rem) 100%;
+  }
+}
+
+/* A row that scrolls sideways fades out at whichever end has more to show, rather than cutting a
+   word off at the edge. The depths follow the row's own scroll: none at the start while it rests
+   there, full at the end until the last item arrives. A row too short to scroll has no timeline
+   and no fade; a browser without scroll-driven animations keeps the hard edges. */
+@property --scroll-fade-x-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-fade-x-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes scroll-fade-x-start {
+  to {
+    --scroll-fade-x-start: 1.5rem;
+  }
+}
+
+@keyframes scroll-fade-x-end {
+  from {
+    --scroll-fade-x-end: 1.5rem;
+  }
+  to {
+    --scroll-fade-x-end: 0px;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  .scroll-fade-x {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--scroll-fade-x-start),
+      black calc(100% - var(--scroll-fade-x-end)),
+      transparent
+    );
+    animation:
+      scroll-fade-x-start linear both,
+      scroll-fade-x-end linear both;
+    animation-timeline: scroll(self inline), scroll(self inline);
+    animation-range:
+      0 1.5rem,
+      calc(100% - 1.5rem) 100%;
+  }
+}
+
+/* Text painted as a muted line with a brighter band in it; `animate-shimmer` sweeps the band
+   across. Without motion the band sits off the text's end and the text reads as plain muted. */
+@utility text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 40%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 60%
+  );
+  background-size: 300% 100%;
+  background-clip: text;
+  color: transparent;
+}
+
+/* View transitions — fade & move between pages.
+   Elements with their own view-transition-name are excluded from the root
+   animation and stay put: always the nav sidebar, the tasks pane and the
+   flows column; and during a navigation within a section (the root layout
+   marks one with `data-navigation="within-section"`) the panel's cap and
+   foot, the breadcrumb bar and each of its crumbs, so that there only the
+   page's content and the crumb that changed move. Between sections nothing
+   of the app's is named and the whole page moves, bar and all.
+
+   The content is never named: a named element is captured from its own top,
+   and with the old page scrolled its group flew the scroll distance. The
+   root is viewport-anchored, so the content rides it. The bar could not be
+   held still on its own: the root image moving 12px opened a strip of bare
+   canvas above it. The cap paints that strip and, named on the same terms,
+   holds still over it; the foot does the same for the panel's end. */
+
+@keyframes default-transition-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes default-transition-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes default-transition-slide-from-bottom {
+  from {
+    transform: translateY(12px);
+  }
+}
+
+@keyframes default-transition-slide-to-top {
+  to {
+    transform: translateY(-12px);
+  }
+}
+
+:root::view-transition-old(root) {
+  animation:
+    110ms cubic-bezier(0.4, 0, 1, 1) both default-transition-fade-out,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-to-top;
+  transform-origin: 50% 50%;
+}
+
+:root::view-transition-new(root) {
+  animation:
+    210ms cubic-bezier(0, 0, 0.2, 1) 90ms both default-transition-fade-in,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-from-bottom;
+}
+
+/* A same-page navigation (the path unchanged, only the query — see the root layout): the page
+   does not move. The old root image is dropped rather than held still, because the two images
+   blend with plus-lighter and an identical pair held at full opacity would double up. What moves
+   is whatever the page named for itself: those groups get the page-level fade and slide. */
+:root[data-navigation="same-page"]::view-transition-old(root) {
+  display: none;
+}
+
+:root[data-navigation="same-page"]::view-transition-new(root) {
+  animation: none;
+}
+
+/* The usage report re-asking for itself, and a stepped flow moving between its steps: the page
+   around them stands still and only the named content goes and comes. */
+::view-transition-old(usage-report),
+::view-transition-old(step-content) {
+  animation:
+    110ms cubic-bezier(0.4, 0, 1, 1) both default-transition-fade-out,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-to-top;
+}
+
+::view-transition-new(usage-report),
+::view-transition-new(step-content) {
+  animation:
+    210ms cubic-bezier(0, 0, 0.2, 1) 90ms both default-transition-fade-in,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-from-bottom;
+}
+
+/* A crumb only the old page had, or only the new one: it goes and comes the way the page does.
+   `:only-child` is what tells them apart from a crumb present on both sides, which keeps its
+   group and holds still, or glides if the crumb before it changed width. */
+::view-transition-old(.crumb):only-child {
+  animation:
+    110ms cubic-bezier(0.4, 0, 1, 1) both default-transition-fade-out,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-to-top;
+}
+
+::view-transition-new(.crumb):only-child {
+  animation:
+    210ms cubic-bezier(0, 0, 0.2, 1) 90ms both default-transition-fade-in,
+    300ms cubic-bezier(0.4, 0, 0.2, 1) both default-transition-slide-from-bottom;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root::view-transition-old(root),
+  :root::view-transition-new(root),
+  ::view-transition-old(usage-report),
+  ::view-transition-new(usage-report),
+  ::view-transition-old(step-content),
+  ::view-transition-new(step-content),
+  ::view-transition-old(.crumb),
+  ::view-transition-new(.crumb),
+  ::view-transition-group(.crumb) {
+    animation: none;
+  }
+}
+
+::view-transition {
+  pointer-events: none;
+}
+
+/* The sidebar morphs between the app's nav and a stepped flow's step list (both named
+   `sidebar`). They differ in width only — both run the viewport's height — but stock scales each
+   snapshot to the box as it morphs, so a narrow icon rail widening into the step list stretched
+   on both axes and read as a zoom. Unscaled and pinned to the top left, the snapshots are revealed
+   by the box's width alone, and the group clips what does not fit yet. That clip would also cut
+   the fold button, which hangs half past the seam, so the button is named on its own
+   (`sidebar-fold`) and kept out of this snapshot. */
+::view-transition-group(sidebar) {
+  overflow: clip;
+}
+::view-transition-old(sidebar),
+::view-transition-new(sidebar) {
+  width: auto;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+
+/* The panel's chrome — the breadcrumb bar, and the cap and foot that draw its edges — held still
+   through a navigation within a section, even when the panel changes width under it: the details
+   pane opening beside a task narrows the panel, and a page without one widens it back. Stock fits
+   each snapshot to its group's width and lets the height follow the aspect ratio, so a bar that
+   only got narrower also shrank in height and its text scaled down with it, both ways at once.
+   The bar's snapshots stay their own size instead, pinned to the left the way its crumbs are, and
+   the group's width alone moves, clipping what does not fit yet. The cap and foot are drawings of
+   an edge rather than text, so they are stretched to the group's box: full height, any width. */
+::view-transition-group(app-header) {
+  overflow: clip;
+}
+::view-transition-old(app-header),
+::view-transition-new(app-header) {
+  width: auto;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+::view-transition-old(panel-cap),
+::view-transition-new(panel-cap),
+::view-transition-old(panel-foot),
+::view-transition-new(panel-foot) {
+  width: 100%;
+  height: 100%;
+}
+
+/* The navigation loader bar, named `nav-progress` so it is its own layer through a view
+   transition: above the page's snapshots, and not cross-faded with them, so it neither flickers
+   nor restarts when the page underneath swaps. Its own opacity and slide keep running live. */
+::view-transition-group(nav-progress) {
+  z-index: 3;
+  animation: none;
+}
+::view-transition-old(nav-progress),
+::view-transition-new(nav-progress) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(nav-progress) {
+  display: none;
+}
+
+/* The rail's card, held still on screen through a navigation from the rail. Its z-50 does not
+   carry over to its group: the tasks pane, named too and after the card in the document, drew over
+   it as the new page came in. */
+::view-transition-group(rail-flyout) {
+  z-index: 2;
+}
+
+/* The logo, named `ryph-logo` wherever a layout draws it (the app's sidebar, a stepped flow's, the
+   flows header) and in the same spot in each, so a navigation between layouts leaves it where it
+   is rather than carrying it off with the sidebar or the page. When both sides have it, only the
+   live new one is shown: the blob drifts, so the old snapshot's edge differs from the new one's and
+   a crossfade of the two blurred it. Should the rail be folded, the group still moves and resizes
+   it between the mark and the wordmark. Raised, as its z-order otherwise depends on which side
+   the groups came from: leaving a flows page, which has no sidebar, the new sidebar's group was
+   stacked over the logo's, and fading in, covered it. Below the rail's card, which can overlap
+   it. */
+::view-transition-group(ryph-logo) {
+  z-index: 1;
+}
+::view-transition-old(ryph-logo):not(:only-child) {
+  display: none;
+}
+::view-transition-new(ryph-logo):not(:only-child) {
+  animation: none;
+}
+
+/* Markdown in a narrow card, a step below prose-sm: the plugin sizes nearly everything in ems off
+   the root, so the root's size carries the type down, and the blocks and headings are drawn closer.
+   Two classes deep, to win over prose-sm's one whatever order the two land in. */
+.prose.prose-compact {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.prose.prose-compact :where(p, ul, ol, blockquote, pre, table, figure):not(:where(.not-prose, .not-prose *)) {
+  margin-block: 0.6em;
+}
+.prose.prose-compact :where(li):not(:where(.not-prose, .not-prose *)) {
+  margin-block: 0.2em;
+}
+.prose.prose-compact :where(ul, ol):not(:where(.not-prose, .not-prose *)) {
+  padding-inline-start: 1.25em;
+}
+.prose.prose-compact :where(h1, h2, h3, h4, h5, h6):not(:where(.not-prose, .not-prose *)) {
+  font-size: 1em;
+  line-height: 1.4;
+  margin-block: 1em 0.4em;
+}
+.prose.prose-compact :where(h1, h2):not(:where(.not-prose, .not-prose *)) {
+  font-size: 1.1em;
+}
+.prose.prose-compact :where(hr):not(:where(.not-prose, .not-prose *)) {
+  margin-block: 1em;
+}
+.prose.prose-compact > :first-child {
+  margin-top: 0;
+}
+.prose.prose-compact > :last-child {
+  margin-bottom: 0;
+}

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Environment"
+  short_description: "Set up the machine a repository's runs start on."
+  icon_small: "./assets/environment.svg"
+  icon_large: "./assets/environment.svg"

@@ -1,0 +1,26 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.vscode
+.claude/
+.agents/
+skills-lock.json
+
+debug/
+forge-data/
+packages/devstack/state/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+dist/
+packages/app/build/
+
+# perf harness output (perf/README.md)
+perf/results/
+
+# a kind cluster's own kubeconfig (deploy/helm/ryph/README.md, quick start)
+*.kubeconfig

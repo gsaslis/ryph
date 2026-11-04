@@ -1,0 +1,120 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // `deno lint`'s recommended set, rule for rule where oxlint has one, on top of oxlint's own
+  // correctness category (real bugs only). Deno-only rules (no-sloppy-imports, no-slow-types,
+  // no-import-prefix, no-unversioned-import, no-deprecated-deno-api, no-window*) have no
+  // counterpart; TypeScript itself rejects what no-dupe-args, no-octal and no-await-in-sync-fn caught.
+  "plugins": ["eslint", "typescript", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "options": {
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    "typescript/adjacent-overload-signatures": "error",
+    "typescript/ban-ts-comment": [
+      "error",
+      {
+        "ts-expect-error": "allow-with-description",
+        "ts-ignore": "allow-with-description",
+        "ts-nocheck": "allow-with-description",
+        "ts-check": false
+      }
+    ],
+    "typescript/no-wrapper-object-types": "error",
+    "typescript/no-unsafe-function-type": "error",
+    "typescript/no-empty-object-type": "error",
+    "constructor-super": "error",
+    "for-direction": "error",
+    "getter-return": "error",
+    "no-array-constructor": "error",
+    "no-async-promise-executor": "error",
+    "no-case-declarations": "error",
+    "no-class-assign": "error",
+    "no-compare-neg-zero": "error",
+    "no-cond-assign": "error",
+    "no-const-assign": "error",
+    "no-constant-condition": "error",
+    "no-control-regex": "error",
+    "no-debugger": "error",
+    "no-delete-var": "error",
+    "no-dupe-class-members": "error",
+    "no-dupe-else-if": "error",
+    "no-dupe-keys": "error",
+    "no-duplicate-case": "error",
+    "no-empty": "error",
+    "no-empty-character-class": "error",
+    "no-empty-pattern": "error",
+    "no-ex-assign": "error",
+    "typescript/no-explicit-any": "error",
+    "no-extra-boolean-cast": "error",
+    "typescript/no-extra-non-null-assertion": "error",
+    "no-fallthrough": "error",
+    "no-func-assign": "error",
+    "no-global-assign": "error",
+    "no-import-assign": "error",
+    "no-inner-declarations": "error",
+    "no-invalid-regexp": "error",
+    "no-irregular-whitespace": "error",
+    "typescript/no-misused-new": "error",
+    "typescript/no-namespace": "error",
+    "no-new-native-nonconstructor": "error",
+    "no-obj-calls": "error",
+    "no-prototype-builtins": "error",
+    "no-redeclare": "error",
+    "no-regex-spaces": "error",
+    "no-self-assign": "error",
+    "no-setter-return": "error",
+    "no-shadow-restricted-names": "error",
+    "typescript/no-this-alias": "error",
+    "no-this-before-super": "error",
+    "no-unreachable": "error",
+    "no-unsafe-finally": "error",
+    "no-unsafe-negation": "error",
+    "no-unused-labels": "error",
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "destructuredArrayIgnorePattern": "^_"
+      }
+    ],
+    "no-var": "error",
+    "no-with": "error",
+    "typescript/prefer-as-const": "error",
+    "prefer-const": "error",
+    "typescript/prefer-namespace-keyword": "error",
+    "require-await": "error",
+    "require-yield": "error",
+    "use-isnan": "error",
+    "valid-typeof": "error",
+
+    // In oxlint's correctness set but not deno's, and style rather than bugs here: escapes in
+    // regexes kept for readability, and Svelte's bare reads that register a reactive dependency.
+    "no-useless-escape": "off",
+    "no-unused-expressions": "off"
+  },
+  "overrides": [
+    {
+      // Tests cast through `?.` on purpose (a miss throws, which fails the test) and evaluate
+      // generated sources.
+      "files": ["**/tests/**", "**/*_test.ts", "**/*.test.ts"],
+      "rules": {
+        "no-unsafe-optional-chaining": "off",
+        "no-eval": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/build/**",
+    "**/.svelte-kit/**",
+    "**/dist/**",
+    "packages/forge/docs/**",
+    "packages/runner/docs/**",
+    "packages/webhooks/docs/**"
+  ]
+}

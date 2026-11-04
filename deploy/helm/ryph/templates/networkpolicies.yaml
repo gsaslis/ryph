@@ -1,0 +1,706 @@
+{{- /*
+Who may talk to whom. This is the boundary compose cannot express: on a flat network a run that
+reaches the model-proxy's data listener reaches its control listener too, and only the service token
+stands between them. Here reachability is the first boundary and the token the second.
+
+The services namespace denies all ingress, then opens each port to exactly its callers. Four
+services are also held on the way OUT: memory fetches a canon source at a URL a person chose, chat
+long-polls Telegram, holds a Socket Mode connection to Slack and a Gateway connection to Discord and
+long-polls the Zulip realms an admin named, the web service fetches pages an AGENT chose, and the
+model-proxy dials whatever an admin registered as a custom model endpoint, holding real provider
+keys. So each gets an egress policy
+written like a run's — DNS, the peers it names, its database, and the internet with every private
+range excepted — and neither a pasted address, nor a bot, nor a model endpoint can be pointed at the
+cluster's own.
+
+The runs namespace denies everything both ways, then lets a run out to DNS, the five endpoints its
+contract names (six with previews: `agent-run-to-previews`), and the egress proxy — and nowhere else:
+not the database, the node, the metadata server, or the rest of the cluster. The tools namespace does
+the same in the other direction: a vendor's hosted MCP server takes ingress from the tool guard and
+nobody else, and the guard from the mcp-gateway and nobody else.
+
+The tools namespace is what the docker launcher's tools network copies: there an internal network
+with no gateway on the host, the guard the one container on both sides, and an egress relay to the
+egress proxy's tool listener, which refuses every private address. Here a hosted server's egress is
+the public internet with every private range excepted. The gateway still mints a per-launch caller
+token the guard presents on every forward: it costs nothing, it keeps one hosted server from speaking
+to another's, and it is what holds if either half of this is ever loosened (or on OrbStack, whose
+docker networks do not isolate, measured).
+
+Policies only add: a run may reach control-plane:7411 because a rule names it, even though its
+address falls in an excepted range. `networkPolicy.extraIngress` / `extraEgress` append rules to a
+policy by name, and can therefore only open more.
+*/ -}}
+{{- include "ryph.netpol.validateExtra" . -}}
+{{- $root := . -}}
+{{- $private := list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16" "127.0.0.0/8" -}}
+{{- $frontDoor := .Values.networkPolicy.frontDoor.from -}}
+{{- $hooks := and $frontDoor (include "ryph.routesHooks" .) -}}
+# ── services ─────────────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+  policyTypes: [Ingress]
+  ingress:
+    # The app proxies the user surface; the historian and forge verify run tokens and resolve git
+    # keys; the model-proxy, mcp-gateway, historian, automations, memory and chat fetch the JWKS,
+    # and the automations service delivers fires to the events door. Every service that
+    # authenticates a user bearer belongs here — without it its verifier has no keys.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [app, historian, forge, model-proxy, mcp-gateway, automations, memory, chat]
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+        # The egress proxy, for one route and one fact: a host it refused. It holds no credential
+        # of ours and presents the refused subject's own claim, so this admits a caller that can
+        # already speak for that run or build and nothing more.
+        {{- include "ryph.netpol.peer" (list . "egress" "app.kubernetes.io/name" "egress-proxy") | nindent 8 }}
+      ports:
+        - port: 7411
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "control-plane")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: historian
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: historian
+  policyTypes: [Ingress]
+  ingress:
+    # Reads through the app, the conclude ping from the control plane, transcript writes from runs.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [app, control-plane]
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+      ports:
+        - port: 7413
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "historian")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: memory
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: memory
+  # The service that fetches an address a person chose: a canon source is a URL or a repo file, and
+  # the fetch leaves from this pod. "Reach a URL" and "reach the cluster" are the same request until
+  # a policy separates them.
+  policyTypes: [Ingress, Egress]
+  # The management surface through the app, briefs and outcomes from the control plane, and the MCP
+  # data route from the gateway — the ONLY way a run's tool calls arrive. Never a run directly.
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [app, control-plane, mcp-gateway]
+      ports:
+        - port: 7440
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "memory")) }}{{ . | nindent 4 }}{{ end }}
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The JWKS a user bearer is verified against, and the internal surface's own calls out.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+      ports:
+        - port: 7411
+    # The platform model: a credential minted on the proxy's control listener (:7421) and spent on
+    # its data listener (:7420). Screening a proposal is the only thing memory needs a model for.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: model-proxy
+      ports:
+        - port: 7420
+        - port: 7421
+    # Its own database.
+    {{- include "ryph.netpol.database" . | nindent 4 }}
+    # The public internet: a canon source's URL, a public repository's raw file. A URL a person
+    # pastes cannot be an address inside the cluster.
+    {{- include "ryph.netpol.internet" (list . $private list) | nindent 4 }}
+    {{- if and .Values.gitlab.enabled .Values.gitlab.egressCidrs }}
+    # The deployment's own GitLab on a private address, which the rule above excepts: a repo-file
+    # ingest reads a public project's raw files from it. Its addresses alone, on its URL's port.
+    - to:
+        {{- range .Values.gitlab.egressCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: {{ include "ryph.gitlab.port" . }}
+    {{- end }}
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "memory")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chat
+  # Held on the way out like memory: a bot's credential (and a Zulip realm is a URL an admin pasted)
+  # can be spent on its platform and on nothing inside the cluster.
+  policyTypes: [Ingress, Egress]
+  # The management surface through the app (and a response's room lookup from automations, with the
+  # caller's bearer), bindings, commander checks and thread reads from the control plane, and the
+  # MCP data route from the gateway — the ONLY way a run's posts arrive. Never a run.
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [app, automations, control-plane, mcp-gateway]
+      ports:
+        - port: 7450
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "chat")) }}{{ . | nindent 4 }}{{ end }}
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The JWKS, and every mention into the control plane's mention door.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+      ports:
+        - port: 7411
+    # Its own database.
+    {{- include "ryph.netpol.database" . | nindent 4 }}
+    # The platforms, on 443 alone (Slack's Socket Mode and Discord's Gateway are wss on 443 too). A
+    # realm served on any
+    # other port is unreachable from here, by design.
+    {{- include "ryph.netpol.internet" (list . $private (list 443)) | nindent 4 }}
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "chat")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  # The service that fetches an address an AGENT chose, the widest "reach a URL" in the deployment:
+  # held on the way out like memory and chat, and tighter on the way in than either. The ONLY thing
+  # that may talk to it is the mcp-gateway — not the app, not the control plane, and above all not a
+  # run, which reaches the web as the gateway's scoped, metered forward of its tool calls.
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+      ports:
+        - port: 7480
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "web")) }}{{ . | nindent 4 }}{{ end }}
+  egress:
+    # DNS: the service resolves a name itself before fetching it, so this rule is also what the
+    # address guard's lookups go through.
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The public internet on 443 alone. A deployment that sets RYPH_WEB_ALLOW_INSECURE=1 must add
+    # port 80 deliberately (networkPolicy.extraEgress.web) rather than have plain http quietly
+    # reachable, and with every exception this rule has, or port 80 reaches every private address:
+    #
+    #   networkPolicy:
+    #     extraEgress:
+    #       web:
+    #         - to:
+    #             - ipBlock:
+    #                 cidr: 0.0.0.0/0
+    #                 except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+    #                          169.254.0.0/16, 127.0.0.0/8]  # + networkPolicy.internet.extraExcept
+    #           ports: [{port: 80}]
+    {{- include "ryph.netpol.internet" (list . $private (list 443)) | nindent 4 }}
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "web")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forge
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: forge
+  policyTypes: [Ingress]
+  ingress:
+    # Permission checks and patch delivery from the control plane; clones and bundles from runs;
+    # agents' issue and pull request tool calls from the mcp-gateway (never from a run directly).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+        # An environment build's clone, from its init container: the one moment a build holds a
+        # git credential, and the git gateway is the one thing it is spent on.
+        {{- include "ryph.netpol.peer" (list . "builds" "app.kubernetes.io/component" "environment-build") | nindent 8 }}
+        # A check suite's clone, the same way: its init container fetches the head on a one-shot key.
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "check-run") | nindent 8 }}
+      ports:
+        - port: 7412
+    {{- if $hooks }}
+    # The front door, to two paths: the GitHub and GitLab webhook intake (/v1/hooks/github,
+    # /v1/hooks/gitlab).
+    - from:
+        {{- toYaml $frontDoor | nindent 8 }}
+      ports:
+        - port: 7412
+    {{- end }}
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "forge")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: automations
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: automations
+  policyTypes: [Ingress]
+  # Automation CRUD and fire history through the app's proxy. The ingestion door (/v1/hooks/<id>) is
+  # a SENDER's — whatever the user pasted the URL into — so the front door opens it. Never a run: a
+  # run that could post a fire would be a run minting tasks.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: app
+      ports:
+        - port: 7414
+    {{- if $hooks }}
+    # The front door, to the rest of /v1/hooks/.
+    - from:
+        {{- toYaml $frontDoor | nindent 8 }}
+      ports:
+        - port: 7414
+    {{- end }}
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "automations")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: model-proxy
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: model-proxy
+  # Held on the way out like memory and chat: an admin registers a custom model endpoint by typing
+  # its base URL, and this pod dials it holding every unsealed provider key it forwards.
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The data listener: every run — and memory and the control plane, each spending a PLATFORM
+    # credential on its own model calls. Nothing else.
+    - from:
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [memory, control-plane]
+      ports:
+        - port: 7420
+    # The control listener: the control plane and the app's proxy, and memory for the one platform
+    # route its own token opens. Never a run.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [control-plane, app, memory]
+      ports:
+        - port: 7421
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "model-proxy")) }}{{ . | nindent 4 }}{{ end }}
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The JWKS a user bearer is verified against.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+      ports:
+        - port: 7411
+    # Its own database: the sealed keys, the virtual keys and the metering trail.
+    {{- include "ryph.netpol.database" . | nindent 4 }}
+    # The model providers, with every private and link-local range excepted, so a real provider key
+    # is never spent on an address the cluster answers. Deliberately NOT pinned to 443: a
+    # self-hosted endpoint on 8443 is what the custom-endpoint feature is for, and the except list,
+    # not the port, is what makes an address safe here.
+    {{- include "ryph.netpol.internet" (list . $private list) | nindent 4 }}
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "model-proxy")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-gateway
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  policyTypes: [Ingress]
+  ingress:
+    # The data listener: every run, and nothing else. A run presents a virtual token here and the
+    # gateway spends the real credential on its behalf.
+    - from:
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+      ports:
+        - port: 7430
+    # The control listener: server CRUD through the app, credential minting from the control plane.
+    # Never a run — this is the surface holding what a run is deliberately never given.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [control-plane, app]
+      ports:
+        - port: 7431
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "mcp-gateway")) }}{{ . | nindent 4 }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  policyTypes: [Ingress]
+  # The public face. What fronts the app is the cluster's to know — a load balancer, an Ingress
+  # controller, a NodePort — so without `networkPolicy.frontDoor.from` this rule has no `from:` and
+  # admits every source on :3000. With it, only those peers: the run pods are the reachable
+  # neighbours, and their egress already denies them :3000. `kubectl port-forward` is unaffected
+  # either way — it connects to loopback inside the pod, which no NetworkPolicy sees.
+  ingress:
+    - ports:
+        - port: 3000
+      {{- with $frontDoor }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "app")) }}{{ . | nindent 4 }}{{ end }}
+---
+# ── runs ─────────────────────────────────────────────────────────────────────────────────────────
+# Default-deny with NO ingress rule anywhere below, and that absence is load-bearing. A run's service
+# containers (a repo's Postgres, its Redis) are sidecars INSIDE the run's pod, on its loopback — so
+# "nothing in the cluster can reach a run's database" is true only for as long as no ingress rule
+# exists here. A NetworkPolicy selects pods, and the sidecars are in the pod.
+#
+# Reserved capacity's placeholders (component `reserved-capacity`) live here too and are selected by
+# no allow rule, on purpose: a pod that only sleeps needs no route, not even DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-run-egress
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  # Selects the POD, so a run's service sidecars inherit this egress with it: credential-free (the
+  # run's Secret is envFrom on the runner container alone) but as reachable outward as the agent is.
+  # Kubernetes has no per-container network policy.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: agent-run
+  policyTypes: [Egress]
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The run contract: report, stream the transcript, clone and push, spend the virtual model key,
+    # call a tool through the gateway.
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "control-plane") | nindent 8 }}
+      ports:
+        - port: 7411
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "historian") | nindent 8 }}
+      ports:
+        - port: 7413
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "forge") | nindent 8 }}
+      ports:
+        - port: 7412
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "model-proxy") | nindent 8 }}
+      ports:
+        - port: 7420
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "mcp-gateway") | nindent 8 }}
+      ports:
+        - port: 7430
+    # THE WAY OUT, AND THE ONLY ONE. There is deliberately no 0.0.0.0/0 rule: a run reaches the
+    # internet by dialling the egress proxy, which matches the requested HOSTNAME against the signed
+    # allowlist the run presents. A host allowlist cannot be written as an ipBlock — the CIDR
+    # carrying a package registry carries a few million other sites.
+    - to:
+        {{- include "ryph.netpol.peer" (list . "egress" "app.kubernetes.io/name" "egress-proxy") | nindent 8 }}
+      ports:
+        - port: 7460
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "agent-run-egress")) }}{{ . | nindent 4 }}{{ end }}
+---
+# A check suite's pod: head code, run to a verdict, and held TIGHTER than a run. Its own component
+# label, never `agent-run`, so it inherits nothing of the rule above: out to DNS, the forge's git
+# gateway (the clone, from the init container that alone holds the one-shot key) and the egress
+# proxy. Deliberately NO control-plane, historian, model-proxy or mcp-gateway rule: a check reports
+# nothing — its verdict is the exit code the control plane reads off the pod status.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: check-run-egress
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: check-run
+  policyTypes: [Egress]
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "forge") | nindent 8 }}
+      ports:
+        - port: 7412
+    - to:
+        {{- include "ryph.netpol.peer" (list . "egress" "app.kubernetes.io/name" "egress-proxy") | nindent 8 }}
+      ports:
+        - port: 7460
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "check-run-egress")) }}{{ . | nindent 4 }}{{ end }}
+---
+# ── builds ───────────────────────────────────────────────────────────────────────────────────────
+# An environment build runs a repo's Dockerfile and its setup.yml: untrusted code, held as a run is.
+# Default-deny both ways, no ingress rule at all, and out only to DNS, the egress proxy (every RUN
+# step's way out, and BuildKit's own to the registries) and the forge's git gateway (the clone).
+# A build that pushes as a cloud workload identity also needs that identity's metadata server:
+# `networkPolicy.extraEgress.environment-build-egress`, and only here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: environment-build-egress
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: environment-build
+  policyTypes: [Egress]
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    - to:
+        {{- include "ryph.netpol.peer" (list . "egress" "app.kubernetes.io/name" "egress-proxy") | nindent 8 }}
+      ports:
+        - port: 7460
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "forge") | nindent 8 }}
+      ports:
+        - port: 7412
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "environment-build-egress")) }}{{ . | nindent 4 }}{{ end }}
+---
+# ── egress ───────────────────────────────────────────────────────────────────────────────────────
+# The one process here exists to reach the open internet, which is why it lives alone. Default deny
+# both ways, then: in from runs, builds and check pods and nothing else, out to DNS, the internet and
+# the control plane's refusal report.
+#
+# Read the asymmetry, because it is the point. The proxy's egress IS the broad `0.0.0.0/0` rule the
+# runs namespace does not have — it is the thing that dials npm. What changed is WHO holds it: a
+# process with no credential, no checkout and no model, whose every forward is gated on a signed
+# hostname allowlist, instead of every agent container.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ include "ryph.ns.egress" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-proxy
+  namespace: {{ include "ryph.ns.egress" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: egress-proxy
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Runs, environment builds and check suites, and nothing else in the cluster: a second caller
+    # would be a second thing able to spend an allowlist, and only those three hold a signed claim.
+    - from:
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "agent-run") | nindent 8 }}
+        {{- include "ryph.netpol.peer" (list . "builds" "app.kubernetes.io/component" "environment-build") | nindent 8 }}
+        # A check suite's setup and checks, on a claim of their own.
+        {{- include "ryph.netpol.peer" (list . "runs" "app.kubernetes.io/component" "check-run") | nindent 8 }}
+      ports:
+        - port: 7460
+    {{- with (include "ryph.netpol.extra" (list . "extraIngress" "egress-proxy")) }}{{ . | nindent 4 }}{{ end }}
+  egress:
+    # The cluster's resolver: this pod's whole job is resolving names a policy allowed, so a bare
+    # port-53 rule would let it resolve against any address in the cluster.
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The internet, on the two ports the proxy forwards. A hostname in an allowlist that happens to
+    # resolve into the cluster is refused here rather than followed.
+    {{- include "ryph.netpol.internet" (list . (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16") (list 80 443)) | nindent 4 }}
+    # The control plane, for refusal reports and nothing else — the one thing this pod sends
+    # anywhere of ours. The ingress half is on the control-plane policy above.
+    - to:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "control-plane") | nindent 8 }}
+      ports:
+        - port: 7411
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "egress-proxy")) }}{{ . | nindent 4 }}{{ end }}
+---
+# ── tools ────────────────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ include "ryph.ns.tools" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tool-guard
+  namespace: {{ include "ryph.ns.tools" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: tool-guard
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The gateway, and nothing else in the cluster. The guard holds the token that opens every hosted
+    # server, so this is the one hop that must not be reachable from anywhere else.
+    - from:
+        {{- include "ryph.netpol.peer" (list . "services" "app.kubernetes.io/name" "mcp-gateway") | nindent 8 }}
+      ports:
+        - port: 8080
+  egress:
+    # The cluster's resolver and nothing else.
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # Forward to the hosted servers it fronts, on whatever port each entry declares. This is the
+    # guard's whole job; it dials nothing else, and cannot.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: tool-server
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tool-server
+  namespace: {{ include "ryph.ns.tools" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: tool-server
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the guard, which means only a caller holding the token the gateway minted this boot. A
+    # hosted server cannot be reached by a run, by another hosted server, or by the gateway going
+    # around its own guard.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: tool-guard
+  egress:
+    # The cluster's resolver.
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # A vendor's MCP server exists to call somebody's API, so it reaches the public internet with
+    # every private and link-local range excepted. The database, the node, the metadata server, the
+    # services namespace and the other hosted servers are all inside one of them.
+    {{- include "ryph.netpol.internet" (list . (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16") list) | nindent 4 }}
+    {{- with (include "ryph.netpol.extra" (list . "extraEgress" "tool-server")) }}{{ . | nindent 4 }}{{ end }}

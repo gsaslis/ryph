@@ -1,0 +1,525 @@
+# ryph on one machine with Docker Compose: the `ryph` binary in a container, beside a real
+# Postgres. For a NAS or a home server. See README.md beside this file.
+#
+# This is the single-process deployment (packages/ryph), the same binary a laptop runs: the
+# simplest way to self-host. deploy/compose-networked/compose.yaml is the other one, the networked
+# deployment as separate services; nothing there applies here.
+#
+#   browser ─→ :3000, :7490 (UI, previews; published on 127.0.0.1) ─┐
+#                                                                   ├─ ryph ─ unix socket ─→ postgres
+#   agent containers ─→ run gate ─→ ryph:7411/7412/7420/7430/7460 ──┘   │       (no network)
+#   (internal network:  (relays those ports, nothing else)              └─ :7470 ─→ launcher
+#    no route out)                                                                    │
+#                                                        runs, builds, hosted MCP ←─ docker socket
+#                                                        servers, the run gate
+#
+#   hosted MCP servers ←─ tool guard ←─ ryph (by name, on the deployment network)
+#   (internal network:  ─→ egress relay ─→ ryph:7461 (public internet only, for their claims)
+#    no route out)
+#
+# Runs are CONFINED: they join an internal network with no route anywhere, whose one way out is
+# the run gate the launcher starts beside them. The gate relays the control plane, forge, model
+# proxy, MCP gateway and egress proxy ports to ryph and nothing else, and the egress proxy is a
+# run's only path to the internet, through the agent's allowlist. Hosted MCP servers are confined
+# the same way, on an internal network of their own: ryph reaches them only through their tool
+# guard, the one container also on the deployment network, and their one way out is the egress
+# relay to ryph's second egress listener (:7461), which opens the public internet to their claims
+# and nothing private.
+#
+# Every image is pulled from quay.io/ryph at RYPH_VERSION (default `edge`, the newest build of
+# main; a release like `0.1.0`, or `sha-<commit>`, pins one):
+#
+#   docker compose pull                        # ryph, Postgres, and the images runs launch
+#   docker compose up -d --wait
+#   docker compose logs ryph | grep "Setup token"
+#
+# Building from source instead: compose.build.yaml beside this file adds a `build:` to each
+# image (README.md, Building from source).
+#
+# THE SOCKET IS THE LAUNCHER'S. Only the `launcher` service mounts the docker socket, which is root
+# on this machine, and it holds no platform secret: no master key, no database, no provider key.
+# ryph, which holds those, has no socket and no docker CLI; it asks the launcher over HTTP to
+# launch runs, checks, builds and hosted MCP servers, and everything about a container that could
+# reach past it (networks, the gate, the runtime, mounts, privileges) is the launcher's own
+# configuration below. README.md says what that does and does not buy, and when Kubernetes is the
+# answer instead.
+
+name: ${COMPOSE_PROJECT_NAME:-ryph-compose}
+
+# The images runs, hosted servers and builds launch on, at the same version as ryph itself: named
+# on ryph, which puts them in launch specs, and on the launcher, which fetches them ahead of the
+# first launch that needs one (`docker compose pull` fetches them too: the services at the end, and
+# artifact-thumbnails for the browser's default; one you name in RYPH_BROWSER_IMAGE it does not).
+x-run-images: &run-images
+  RYPH_AGENT_IMAGE: ${RYPH_AGENT_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-agent:${RYPH_VERSION:-edge}}
+  RYPH_BROWSER_IMAGE: ${RYPH_BROWSER_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-browser:${RYPH_VERSION:-edge}}
+  RYPH_ENV_BASE_IMAGE: ${RYPH_ENV_BASE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-universal:${RYPH_VERSION:-edge}}
+  RYPH_HARNESS_IMAGE: ${RYPH_HARNESS_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-harness:${RYPH_VERSION:-edge}}
+
+# Environment builds and checks, one switch read by both: ryph refuses to boot claiming either
+# when the launcher serves neither.
+x-builds-and-checks: &builds-and-checks
+  RYPH_ENVIRONMENTS: ${RYPH_ENVIRONMENTS:-on}
+  RYPH_CHECKS: ${RYPH_CHECKS:-on}
+
+services:
+  ryph:
+    # RYPH_VARIANT=-radicle runs `ryph:<version>-radicle`, which adds Radicle's CLI, for an
+    # existing node on this machine (README.md, Radicle). A suffix and not a whole image, so ryph
+    # stays at the launcher's RYPH_VERSION: the two refuse each other at another wire revision.
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph:${RYPH_VERSION:-edge}${RYPH_VARIANT:-}
+    # tini as PID 1: ryph starts git processes, and something has to reap them.
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # No docker socket and no docker group: ryph reaches docker only through the launcher.
+    group_add:
+      - "1994" # The thumbnail renderer's socket group.
+    volumes:
+      - type: volume
+        source: thumbnail-socket
+        target: /run/ryph-thumbnails
+        read_only: true
+        volume:
+          nocopy: true
+      # The unpacked runtime, the master key (secrets.key) and the forge's repo cache.
+      - ryph-home:/var/lib/ryph
+      # The launcher's two tokens, which it mints there on first boot. Read-only: ryph presents
+      # them, it never writes them.
+      - launcher-tokens:/run/ryph-launcher:ro
+      # Postgres's socket directory: the only way to the database, which listens on no network.
+      - postgres-socket:/run/postgresql
+      # Repositories agents may work on without a git host (RYPH_LOCAL_REPO_ROOT).
+      - repos:/srv/repos
+    environment:
+      <<: [*run-images, *builds-and-checks]
+      # ── the database: Postgres over its unix socket, trusted because only ryph can reach it ──
+      RYPH_ARTIFACT_THUMBNAIL_SOCKET: /run/ryph-thumbnails/render.sock
+      RYPH_DB: postgres:///ryph
+      PGHOST: /run/postgresql
+      PGUSER: ryph
+      # Minted on first boot into the ryph-home volume and read from there after. It seals every
+      # provider key and credential: back it up apart from the database (README.md, Backups).
+      RYPH_SECRETS_KEY_FILE: /var/lib/ryph/secrets.key
+
+      # ── who signs in ──
+      # On: people register, and the first registration needs the setup token in the logs. Off:
+      # one owner, signed in by a link from `docker compose exec ryph ryph login`.
+      RYPH_MULTIUSER: ${RYPH_MULTIUSER:-on}
+      # Where a browser reaches the UI. Every link ryph builds and the passkey origin come from it,
+      # and sign-in is refused from any other origin. Behind a reverse proxy, its https URL.
+      RYPH_APP_URL: ${RYPH_APP_URL:-http://localhost:${RYPH_UI_PORT:-3000}}
+      # Behind a reverse proxy, the header it puts the browser's address on (x-forwarded-for, the
+      # XFF_DEPTH-th entry from the right). Without it every visitor arrives from docker's gateway
+      # and shares one sign-in rate limit.
+      ADDRESS_HEADER: ${RYPH_ADDRESS_HEADER:-}
+      XFF_DEPTH: ${RYPH_XFF_DEPTH:-1}
+      RYPH_ALLOWED_HOSTS: ${RYPH_ALLOWED_HOSTS:-}
+      RYPH_SMTP_URL: ${RYPH_SMTP_URL:-}
+      RYPH_MAIL_FROM: ${RYPH_MAIL_FROM:-}
+
+      # ── runs: containers on this machine's docker, through the launcher ──
+      RYPH_PROVISIONER: docker
+      # Runs, checks, environment builds (README.md, Environments) and hosted MCP servers: all
+      # launched by the launcher service, the one container with the docker socket. Its networks,
+      # gate and runtime are its own configuration, not ryph's. The tokens are the files it mints.
+      RYPH_LAUNCHER_URL: http://launcher:7470
+      RYPH_LAUNCHER_TOKEN_FILE: /run/ryph-launcher/token
+      RYPH_LAUNCHER_TOOLS_TOKEN_FILE: /run/ryph-launcher/tools-token
+      # A build clones in the launcher, which dials ryph's forge by name on the network below.
+      RYPH_ENV_GIT_GATEWAY_URL: http://ryph:7412
+      # The addresses runs are handed: every one on the gate, which is named for RYPH_NETWORK. The
+      # gate relays exactly their ports (RYPH_DOCKER_GATE_ROUTES on the launcher), so nothing else
+      # of ryph (the UI included) is in reach; ryph warns at boot of an address it does not relay.
+      # The forge's git gateway follows RYPH_PUBLIC_URL on its own port (7412). The listeners
+      # leave loopback for the gate, which dials them on the network below, and ryph refuses to
+      # boot if one of them is still on loopback.
+      RYPH_BIND: 0.0.0.0
+      # Intentional wildcard inside the container, not the host network namespace. Other
+      # containers on its attached networks can reach these listeners too, not only the gate.
+      RYPH_BIND_SCOPE: container
+      RYPH_APP_BIND: 0.0.0.0
+      RYPH_MCP_GATEWAY_HOST: 0.0.0.0
+      RYPH_EGRESS_BIND: 0.0.0.0
+      RYPH_PUBLIC_URL: http://ryph-gate-${RYPH_NETWORK:-ryph-compose}:7411
+      RYPH_MODEL_PROXY_URL: http://ryph-gate-${RYPH_NETWORK:-ryph-compose}:7420
+      RYPH_MCP_GATEWAY_URL: http://ryph-gate-${RYPH_NETWORK:-ryph-compose}:7430
+      # A run's only way to the internet: the egress proxy, which lets through what the agent's
+      # allowlist names. Its claim key is derived from the master key.
+      RYPH_EGRESS_PROXY_URL: http://ryph-gate-${RYPH_NETWORK:-ryph-compose}:7460
+      RYPH_EGRESS: proxy
+      # Addresses the egress proxy never dials, for runs or hosted MCP servers. On a cloud VM, set
+      # it to this host's public addresses (comma-separated CIDRs): a hosted server may reach any
+      # public address, and from inside this container the VM's own is not recognisable as ours.
+      RYPH_EGRESS_DENY_CIDRS: ${RYPH_EGRESS_DENY_CIDRS:-}
+      # Previews of an agent's dev server, all on one port told apart by host name
+      # (http://<id>.localhost:7490), published beside the UI below. Only while RYPH_APP_URL is a
+      # localhost address: behind a reverse proxy they are off.
+      RYPH_LOCAL_PREVIEWS_PORT: 7490
+      RYPH_LOCAL_PREVIEWS_BIND: 0.0.0.0
+      RYPH_LOCAL_PREVIEWS_PUBLIC_PORT: ${RYPH_PREVIEW_PORT:-7490}
+      RYPH_RUN_CONCURRENCY: ${RYPH_RUN_CONCURRENCY:-}
+      RYPH_RUN_MAX_SPEND_USD: ${RYPH_RUN_MAX_SPEND_USD:-}
+      RYPH_MODEL_SPEND_CEILING_USD: ${RYPH_MODEL_SPEND_CEILING_USD:-}
+      RYPH_WEB_SEARCH_KEY: ${RYPH_WEB_SEARCH_KEY:-}
+      # Memory search by meaning as well as by words, with the small model the binary carries
+      # (bge-small-en-v1.5, quantized), loaded on the first memory write or search. off is words
+      # only.
+      RYPH_MEMORY_EMBEDDINGS: ${RYPH_MEMORY_EMBEDDINGS:-local}
+
+      # ── repositories ──
+      # GitHub as you: a fine-grained token (README.md says which permissions). Empty is no GitHub.
+      RYPH_GITHUB_TOKEN: ${RYPH_GITHUB_TOKEN:-}
+      # Or GitHub as an App, which needs GitHub to reach this machine for webhooks. All four, or
+      # none, and never beside RYPH_GITHUB_TOKEN.
+      RYPH_GITHUB_APP_ID: ${RYPH_GITHUB_APP_ID:-}
+      RYPH_GITHUB_PRIVATE_KEY: ${RYPH_GITHUB_PRIVATE_KEY:-}
+      RYPH_GITHUB_CLIENT_ID: ${RYPH_GITHUB_CLIENT_ID:-}
+      RYPH_GITHUB_CLIENT_SECRET: ${RYPH_GITHUB_CLIENT_SECRET:-}
+      RYPH_GITHUB_WEBHOOK_SECRET: ${RYPH_GITHUB_WEBHOOK_SECRET:-}
+      # GitLab (gitlab.com, or your instance's URL): as you with a personal access token and
+      # RYPH_GITLAB_MODE=user, or as a bot user (README.md, GitLab). Empty is no GitLab.
+      RYPH_GITLAB_URL: ${RYPH_GITLAB_URL:-}
+      RYPH_GITLAB_MODE: ${RYPH_GITLAB_MODE:-}
+      RYPH_GITLAB_TOKEN: ${RYPH_GITLAB_TOKEN:-}
+      # Bot mode only: the webhook master secret, the OAuth application for sign-in, and the group
+      # whose members may sign up.
+      RYPH_GITLAB_WEBHOOK_SECRET: ${RYPH_GITLAB_WEBHOOK_SECRET:-}
+      RYPH_GITLAB_CLIENT_ID: ${RYPH_GITLAB_CLIENT_ID:-}
+      RYPH_GITLAB_CLIENT_SECRET: ${RYPH_GITLAB_CLIENT_SECRET:-}
+      RYPH_GITLAB_GROUP: ${RYPH_GITLAB_GROUP:-}
+      # The UI's half of GitLab sign-in: where to send the browser, and the application's id.
+      PUBLIC_GITLAB_URL: ${RYPH_GITLAB_URL:-https://gitlab.com}
+      PUBLIC_GITLAB_CLIENT_ID: ${RYPH_GITLAB_CLIENT_ID:-}
+      # Radicle: http://radicle:7470 with the `radicle` profile, ryph's own node; or `embedded`
+      # for an existing node on this machine (README.md, Radicle). Empty is no Radicle.
+      RYPH_RADICLE_URL: ${RYPH_RADICLE_URL:-}
+      RYPH_RADICLE_TOKEN: ${RYPH_RADICLE_TOKEN:-}
+      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
+      # Repositories on this machine: a directory inside this container, the `repos` volume
+      # unless you mount another (README.md, Repositories on this machine). `off` turns it off.
+      RYPH_LOCAL_REPO_ROOT: ${RYPH_LOCAL_REPO_ROOT:-/srv/repos}
+
+      RYPH_LOG_LEVEL: ${RYPH_LOG_LEVEL:-warn}
+    ports:
+      # Loopback only by default. RYPH_UI_BIND=0.0.0.0 publishes it to your network, which needs
+      # TLS in front for sign-in to work (README.md, Beyond localhost).
+      - "${RYPH_UI_BIND:-127.0.0.1}:${RYPH_UI_PORT:-3000}:3000"
+      - "${RYPH_UI_BIND:-127.0.0.1}:${RYPH_PREVIEW_PORT:-7490}:7490"
+    networks:
+      # Also where hosted MCP servers' tool guard is, which ryph dials by name: never their own
+      # network, which the launcher keeps to them, their guard and their egress relay.
+      - deployment
+      - radicle
+    depends_on:
+      postgres: { condition: service_healthy }
+      # Asked at boot whether it confines runs, what its gate is called and relays, and where the
+      # first reconcile starts; and it mints the tokens ryph reads (ryph waits for both). What it
+      # said is kept for the life of the process, so a recreated launcher restarts ryph
+      # (`restart: true`). Started, not healthy: the launcher is healthy only while docker answers
+      # it, and a wrong DOCKER_GID must not keep the UI and its setup token down too. ryph boots,
+      # and says loudly that docker is unreachable.
+      launcher: { condition: service_started, restart: true }
+    healthcheck:
+      # The control plane's readiness and the UI answering, through the node the image carries.
+      test:
+        - CMD
+        - /opt/node/bin/node
+        - -e
+        - >-
+            Promise.all(["http://127.0.0.1:7411/readyz", "http://127.0.0.1:3000/"].map((u) =>
+            fetch(u, { redirect: "manual" }).then((r) => r.status < 500))).then((ok) =>
+            process.exit(ok.every(Boolean) ? 0 : 1), () => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    # Past ryph's own drain deadline (25 s), so the database closes before docker kills it.
+    stop_grace_period: 35s
+    restart: unless-stopped
+
+  # No network, credentials, or Docker socket. Only ryph can connect to this Unix socket.
+  artifact-thumbnails:
+    # Its own variable and not RYPH_BROWSER_IMAGE, which can be `off`: thumbnails stay on either way.
+    image: ${RYPH_ARTIFACT_THUMBNAIL_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-browser:${RYPH_VERSION:-edge}}
+    entrypoint: ["bun", "run", "src/thumbnail.ts"]
+    working_dir: /app/packages/browser
+    user: "1994:1994"
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      # Same pinned namespace-aware profile embedded in the local binary.
+      - seccomp=../../packages/host/src/thumbnail_seccomp.json
+    cpus: 1
+    mem_limit: 1g
+    pids_limit: 512
+    shm_size: 128m
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      # Seeded from the browser image: uid/gid 1994, mode 0750; socket mode 0660.
+      - thumbnail-socket:/run/ryph-thumbnails
+    environment:
+      HOME: /tmp
+      RYPH_THUMBNAIL_SOCKET: /run/ryph-thumbnails/render.sock
+      RYPH_THUMBNAIL_SANDBOX: required
+      # Docker's client config may otherwise inject authenticated proxy URLs.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      FTP_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ftp_proxy: ""
+      all_proxy: ""
+      no_proxy: ""
+    healthcheck:
+      test: ["CMD", "bun", "--no-env-file", "-e", "fetch('http://localhost/health', {unix:'/run/ryph-thumbnails/render.sock'}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+  # The docker launcher (packages/launcher): the ONLY container here that mounts the docker socket,
+  # and it holds no platform secret. ryph reaches it on :7470 with the two tokens it mints into the
+  # launcher-tokens volume; nothing publishes it, and no run can reach it (the gate does not relay
+  # it, and the run network resolves nothing else).
+  #
+  # Everything about a container that could reach past it is decided here, from this environment,
+  # never by a request: the networks, the gate and its routes, the OCI runtime, the tools network.
+  launcher:
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-launcher:${RYPH_VERSION:-edge}
+    # tini as PID 1: it starts docker, git and buildx processes, and something has to reap them.
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # The socket is root:docker (root:root on Docker Desktop), mode 660: membership of its group is
+    # what lets the launcher use it. Find yours with `stat -c %g /var/run/docker.sock` on Linux.
+    group_add:
+      - "${DOCKER_GID:-0}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Its HOME (buildx's builder state), the environment builder's layer cache, and a build's temp
+      # files: builds happen in this container, so their working set is its volumes.
+      - launcher-home:/var/lib/ryph-launcher
+      - launcher-cache:/var/cache/ryph-launcher
+      - launcher-temp:/var/tmp/ryph-launcher
+      # Where it mints its two tokens on first boot, for ryph to read (read-only there).
+      - launcher-tokens:/run/ryph-launcher
+    environment:
+      <<: [*run-images, *builds-and-checks]
+      RYPH_LAUNCHER_TOKEN_FILE: /run/ryph-launcher/token
+      RYPH_LAUNCHER_TOOLS_TOKEN_FILE: /run/ryph-launcher/tools-token
+      # The network ryph, the launcher and the run gate share (below). Runs never join it.
+      RYPH_DOCKER_NETWORK: ${RYPH_NETWORK:-ryph-compose}
+      # The internal network every run joins instead, which the launcher makes on first use with no
+      # route out and no gateway on the docker host (Docker Engine 28 or later), and refuses to use
+      # if it finds one that has either.
+      RYPH_DOCKER_RUN_NETWORK: ${RYPH_NETWORK:-ryph-compose}-runs
+      # The gate: one container, on both networks, relaying the ports of the addresses ryph hands
+      # runs to ryph by its service name, and nothing else: the control plane, the forge's git
+      # gateway, the model proxy, the MCP gateway and the egress proxy.
+      RYPH_DOCKER_GATE_IMAGE: ${RYPH_DOCKER_GATE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-run-gate:${RYPH_VERSION:-edge}}
+      RYPH_DOCKER_GATE_ROUTES: 7411=ryph:7411,7412=ryph:7412,7420=ryph:7420,7430=ryph:7430,7460=ryph:7460
+      # A sandboxed runtime for runs (runsc, kata-runtime) where the engine has one; Linux only.
+      RYPH_DOCKER_RUNTIME: ${RYPH_DOCKER_RUNTIME:-}
+      # Hosted MCP servers go on their own network, which the launcher makes internal with no
+      # gateway on the docker host, as the run network: they reach their tool guard (also on the
+      # deployment network, where ryph dials it by name, so nothing is published) and their egress
+      # relay, and nothing else. The guard runs this image and no other.
+      RYPH_TOOL_NETWORK: ${RYPH_NETWORK:-ryph-compose}-tools
+      RYPH_TOOL_GUARD_IMAGE: ${RYPH_TOOL_GUARD_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-tool-guard:${RYPH_VERSION:-edge}}
+      # Their one way to the internet: the egress relay (the run gate's image, above) to ryph's
+      # egress proxy's second listener, which takes hosted servers' claims alone and dials only
+      # public addresses. `off` leaves them none.
+      RYPH_TOOL_EGRESS_TARGET: ryph:7461
+      # The environment builder's working set, on the volumes above.
+      RYPH_ENV_CACHE_DIR: /var/cache/ryph-launcher
+      RYPH_ENV_TEMP_DIR: /var/tmp/ryph-launcher
+      # Every image above, fetched one at a time at boot so the first run does not wait on a
+      # several-GB pull; off leaves each to its first launch. The launcher's setting alone: ryph
+      # refuses it, and reports what the launcher fetches.
+      RYPH_IMAGE_PREFETCH: ${RYPH_IMAGE_PREFETCH:-on}
+      # Under RYPH_DOCKER_RUNTIME, a build (privileged BuildKit, runc) never gets the runs'
+      # sandbox, so the launcher refuses every build: whether one is of the default branch is
+      # ryph's word, which it does not take unless this is on.
+      RYPH_ENV_TRUST_DEFAULT_BRANCH: ${RYPH_ENV_TRUST_DEFAULT_BRANCH:-off}
+      RYPH_LOG_LEVEL: ${RYPH_LOG_LEVEL:-warn}
+    networks:
+      - deployment
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - --no-env-file
+        - -e
+        - >-
+            fetch("http://127.0.0.1:7470/readyz").then((r) => process.exit(r.ok ? 0 : 1),
+            () => process.exit(1))
+      interval: 5s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    # Past its drain (RYPH_DRAIN_DEADLINE_MS, 40 s), which outlasts a run's 30 s docker stop.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    # No network at all, and no TCP listener: ryph reaches it through the socket in the shared
+    # volume, and nothing else on this machine or a run's network can.
+    network_mode: none
+    command: ["postgres", "-c", "listen_addresses="]
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      POSTGRES_USER: ryph
+      POSTGRES_DB: ryph
+      # Trust on the socket, the only door there is. A password would guard nothing the socket's
+      # volume does not.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - postgres-socket:/var/run/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ryph", "-d", "ryph"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # ── radicle (COMPOSE_PROFILES=radicle) ────────────────────────────────────────────────────────
+  # ryph's own Radicle node and the bridge that drives it, as the networked deployment runs them
+  # (deploy/compose-networked/compose.yaml's `radicle` profile): a key of the node's own,
+  # generated on first boot, unencrypted unless RAD_PASSPHRASE says otherwise. ryph's forge dials
+  # the bridge with RYPH_RADICLE_URL=http://radicle:7470 and the shared RYPH_RADICLE_TOKEN
+  # (README.md, Radicle).
+  radicle-node:
+    profiles: ["radicle"]
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-radicle-node:${RYPH_VERSION:-edge}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
+      RYPH_RADICLE_ALIAS: ${RYPH_RADICLE_ALIAS:-ryph}
+      RYPH_RADICLE_CONNECT: ${RYPH_RADICLE_CONNECT:-}
+      RYPH_RADICLE_EXTERNAL_ADDRESS: ${RYPH_RADICLE_EXTERNAL_ADDRESS:-}
+    volumes:
+      # The node's storage, its key and its control socket, shared with the bridge.
+      - radicle-home:/data/radicle
+    # Outbound only: fetches ride the connections it opens. Publish 8776 only if peers should dial
+    # in (RYPH_RADICLE_EXTERNAL_ADDRESS too).
+    networks:
+      - radicle
+    healthcheck:
+      test: ["CMD", "rad", "node", "status", "--only", "nid"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  radicle:
+    profiles: ["radicle"]
+    image: ${RYPH_REGISTRY:-quay.io/ryph}/ryph-radicle:${RYPH_VERSION:-edge}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      RYPH_RADICLE_PORT: 7470
+      RYPH_RADICLE_TOKEN: ${RYPH_RADICLE_TOKEN:-}
+      # Its cursors live in ryph's own database, over the same socket; ryph applies their
+      # migrations at boot, which is why this waits for ryph.
+      RYPH_RADICLE_DB: postgres:///ryph
+      PGHOST: /run/postgresql
+      PGUSER: ryph
+      # Where comments and pushes go: the forge inside ryph, presenting the same token.
+      RYPH_RADICLE_EVENTS_URL: http://ryph:7412/v1/hooks/radicle
+      RYPH_RADICLE_EXPLORER_URL: ${RYPH_RADICLE_EXPLORER_URL:-}
+      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
+      RAD_HOME: /data/radicle
+      RYPH_LOG_LEVEL: ${RYPH_LOG_LEVEL:-warn}
+    volumes:
+      - radicle-home:/data/radicle
+      - postgres-socket:/run/postgresql
+    networks:
+      - radicle
+    depends_on:
+      radicle-node: { condition: service_healthy }
+      ryph: { condition: service_healthy }
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - --no-env-file
+        - -e
+        - >-
+            fetch("http://127.0.0.1:7470/readyz").then((r) => process.exit(r.ok ? 0 : 1),
+            () => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # ── the images runs launch ───────────────────────────────────────────────────────────────────
+  # Never started by compose (scale 0): the launcher starts them, by the refs above, on the socket.
+  # Listed so `docker compose pull` fetches them with everything else, ahead of the first run: the
+  # agent image is several GB, and a run waiting on that pull waits with it.
+  ryph-agent:
+    scale: 0
+    image: ${RYPH_AGENT_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-agent:${RYPH_VERSION:-edge}}
+  ryph-tool-guard:
+    scale: 0
+    image: ${RYPH_TOOL_GUARD_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-tool-guard:${RYPH_VERSION:-edge}}
+  ryph-run-gate:
+    scale: 0
+    image: ${RYPH_DOCKER_GATE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-run-gate:${RYPH_VERSION:-edge}}
+  # What environment builds start from: the universal image (most of it shared with the agent
+  # image) and the harness layer.
+  ryph-universal:
+    scale: 0
+    image: ${RYPH_ENV_BASE_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-universal:${RYPH_VERSION:-edge}}
+  ryph-harness:
+    scale: 0
+    image: ${RYPH_HARNESS_IMAGE:-${RYPH_REGISTRY:-quay.io/ryph}/ryph-harness:${RYPH_VERSION:-edge}}
+
+networks:
+  # Named, not derived from the project, because the launcher is told the name
+  # (RYPH_DOCKER_NETWORK) and starts the run gate on it. The run network itself is the launcher's to
+  # make, not compose's.
+  deployment:
+    name: ${RYPH_NETWORK:-ryph-compose}
+  # The radicle node's way out and the bridge's way to ryph, apart from the runs' network.
+  radicle:
+    name: ${RYPH_NETWORK:-ryph-compose}-radicle
+
+volumes:
+  thumbnail-socket:
+  ryph-home:
+  launcher-home:
+  launcher-cache:
+  launcher-temp:
+  launcher-tokens:
+  repos:
+  postgres-data:
+  postgres-socket:
+  radicle-home:

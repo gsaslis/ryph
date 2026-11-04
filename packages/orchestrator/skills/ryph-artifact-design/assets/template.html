@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Choosing a queue for job dispatch</title>
+    <!--
+      Starter page for a Ryph artifact. Copy it, keep the tokens and the layout classes, replace the
+      content. Everything is inline; nothing loads from the network.
+
+      Optional web font (one family, with the system stack kept as the fallback in --font-sans):
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+    -->
+    <style>
+    :root {
+      color-scheme: light dark;
+
+      --bg: #fbfbf9;
+      --surface: #ffffff;
+      --surface-2: #f3f3ef;
+      --border: #e4e4e0;
+      --text: #1c1c1a;
+      --muted: #5f5f5a;
+      --accent: #2f5bd3;
+      --accent-soft: #e8eefc;
+      --good: #1f7a4d;
+      --warn: #a15c00;
+      --bad: #b42318;
+
+      --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+        Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+      --step--1: 0.875rem;
+      --step-0: 1rem;
+      --step-1: 1.25rem;
+      --step-2: 1.5rem;
+      --step-3: clamp(1.75rem, 5vw, 2.5rem);
+
+      --space-1: 0.25rem;
+      --space-2: 0.5rem;
+      --space-3: 1rem;
+      --space-4: 1.5rem;
+      --space-5: 2.5rem;
+      --space-6: 4rem;
+
+      --measure: 65ch;
+      --wide: 68rem;
+      --radius: 10px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #131314;
+        --surface: #1b1b1d;
+        --surface-2: #232326;
+        --border: #2e2e32;
+        --text: #ececea;
+        --muted: #a3a3a0;
+        --accent: #8aa8ff;
+        --accent-soft: #1f2840;
+        --good: #5cc38f;
+        --warn: #e0a64a;
+        --bad: #f08a80;
+      }
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: var(--step-0);
+      line-height: 1.6;
+      text-wrap: pretty;
+      overflow-wrap: break-word;
+    }
+
+    @media (min-width: 48rem) {
+      body {
+        font-size: 1.0625rem;
+      }
+    }
+
+    main {
+      max-width: var(--wide);
+      margin: 0 auto;
+      padding: var(--space-5) max(1rem, env(safe-area-inset-left)) var(--space-6);
+    }
+
+    @media (min-width: 48rem) {
+      main {
+        padding-inline: var(--space-5);
+      }
+    }
+
+    /* Prose stays at the measure; tables, figures and grids may use the full width. */
+    .prose > *,
+    header.page > * {
+      max-width: var(--measure);
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.2;
+      text-wrap: balance;
+      margin: 0;
+    }
+    h1 {
+      font-size: var(--step-3);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    h2 {
+      font-size: var(--step-2);
+      font-weight: 650;
+      margin-top: var(--space-6);
+    }
+    h3 {
+      font-size: var(--step-1);
+      font-weight: 600;
+      margin-top: var(--space-5);
+    }
+    h2 + *,
+    h3 + * {
+      margin-top: var(--space-3);
+    }
+
+    p,
+    ul,
+    ol {
+      margin: var(--space-3) 0 0;
+    }
+    li + li {
+      margin-top: var(--space-2);
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 0.15em;
+      text-decoration-thickness: 1px;
+    }
+    a:hover {
+      text-decoration-thickness: 2px;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.9em;
+      background: var(--surface-2);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+
+    pre {
+      font-family: var(--font-mono);
+      font-size: var(--step--1);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-3);
+      overflow-x: auto;
+    }
+    pre code {
+      background: none;
+      padding: 0;
+    }
+
+    /* Header */
+    header.page {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: var(--space-4);
+    }
+    .eyebrow {
+      margin: 0 0 var(--space-2);
+      font-size: var(--step--1);
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .subtitle {
+      margin-top: var(--space-2);
+      font-size: var(--step-1);
+      color: var(--muted);
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-1) var(--space-4);
+      margin-top: var(--space-3);
+      font-size: var(--step--1);
+      color: var(--muted);
+    }
+
+    /* TL;DR */
+    .tldr {
+      max-width: var(--measure);
+      margin-top: var(--space-5);
+      padding: var(--space-3) var(--space-4);
+      background: var(--accent-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+    .tldr h2 {
+      margin: 0;
+      font-size: var(--step--1);
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .tldr p {
+      margin-top: var(--space-2);
+    }
+
+    /* Key numbers */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+      gap: var(--space-3);
+      margin-top: var(--space-5);
+      padding: 0;
+      list-style: none;
+    }
+    .stats li {
+      margin: 0;
+      padding: var(--space-3);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .stats .value {
+      display: block;
+      font-size: var(--step-2);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .stats .label {
+      font-size: var(--step--1);
+      color: var(--muted);
+    }
+
+    /* Tables scroll inside their own box, never the page. */
+    .table-wrap {
+      margin-top: var(--space-4);
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--step--1);
+    }
+    caption {
+      caption-side: bottom;
+      text-align: left;
+      padding: var(--space-2) var(--space-3);
+      color: var(--muted);
+    }
+    th,
+    td {
+      padding: var(--space-2) var(--space-3);
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      min-width: 8rem;
+    }
+    thead th {
+      background: var(--surface-2);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    tbody th {
+      font-weight: 600;
+    }
+    tbody tr:last-child > * {
+      border-bottom: 0;
+    }
+    td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    th.chosen {
+      color: var(--accent);
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
+
+    .status {
+      font-weight: 600;
+    }
+    .status.good {
+      color: var(--good);
+    }
+    .status.warn {
+      color: var(--warn);
+    }
+    .status.bad {
+      color: var(--bad);
+    }
+
+    /* Figures */
+    figure {
+      margin: var(--space-5) 0 0;
+    }
+    figure img,
+    figure svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+    figcaption {
+      max-width: var(--measure);
+      margin-top: var(--space-2);
+      font-size: var(--step--1);
+      color: var(--muted);
+    }
+    .chart {
+      padding: var(--space-3);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .chart .bar {
+      fill: var(--muted);
+      opacity: 0.45;
+    }
+    .chart .bar.highlight {
+      fill: var(--accent);
+      opacity: 1;
+    }
+    .chart text {
+      fill: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+    }
+    .chart .axis {
+      stroke: var(--border);
+    }
+    .chart .tick {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+
+    details {
+      max-width: var(--measure);
+      margin-top: var(--space-4);
+      border-top: 1px solid var(--border);
+      padding-top: var(--space-3);
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    /* Sources */
+    sup a {
+      text-decoration: none;
+      font-size: 0.75em;
+      padding-inline: 0.1em;
+    }
+    .sources {
+      font-size: var(--step--1);
+      color: var(--muted);
+      padding-left: 1.5rem;
+    }
+    .sources a {
+      overflow-wrap: anywhere;
+    }
+
+    footer.page {
+      max-width: var(--measure);
+      margin-top: var(--space-6);
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--border);
+      font-size: var(--step--1);
+      color: var(--muted);
+    }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="page">
+        <p class="eyebrow">Research overview</p>
+        <h1>Choosing a queue for job dispatch</h1>
+        <p
+          class="subtitle">Three options compared on latency, operations and cost for about 2,000 jobs
+      a minute.</p>
+        <p class="meta">
+          <span>8 October 2026</span>
+          <span>Requested in #platform</span>
+        </p>
+      </header>
+
+      <section class="tldr" aria-labelledby="tldr-title">
+        <h2 id="tldr-title">TL;DR</h2>
+        <p>Use Postgres with <code>SKIP LOCKED</code>. It meets the latency target with the database we
+      already run, and adds no new service to operate. Revisit at ten times the load.</p>
+      </section>
+
+      <ul class="stats" aria-label="Key numbers">
+        <li><span class="value">2,000</span><span class="label">jobs per minute at peak</span></li>
+        <li><span class="value">38 ms</span><span class="label">p95 dispatch, Postgres</span></li>
+        <li><span class="value">0</span><span class="label">new services to run</span></li>
+      </ul>
+
+      <section class="prose" aria-labelledby="findings">
+        <h2 id="findings">What we found</h2>
+        <p>All three options meet the 100 ms dispatch target at today's load. They differ in what they
+      cost to run and in how they fail.<sup><a href="#src-1" target="_self">1</a></sup></p>
+        <p>Postgres keeps jobs and their state in one transaction, so a crash between "claimed" and
+      "done" cannot lose a job. Redis Streams is faster but needs its own persistence setup to
+      match that.<sup><a href="#src-2" target="_self">2</a></sup></p>
+      </section>
+
+      <section aria-labelledby="comparison">
+        <h2 id="comparison">Comparison</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>Measured on a staging copy, 10-minute runs at 2,000 jobs per minute.</caption>
+            <thead>
+              <tr>
+                <th scope="col">Criterion</th>
+                <th scope="col" class="chosen">Postgres</th>
+                <th scope="col">Redis Streams</th>
+                <th scope="col">Managed queue</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">p95 dispatch</th>
+                <td class="num">38 ms</td>
+                <td class="num">9 ms</td>
+                <td class="num">61 ms</td>
+              </tr>
+              <tr>
+                <th scope="row">New service</th>
+                <td><span class="status good">None</span></td>
+                <td><span class="status warn">Redis cluster</span></td>
+                <td><span class="status warn">Cloud account</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Job lost on crash</th>
+                <td><span class="status good">Never</span></td>
+                <td><span class="status bad">Possible</span> without AOF</td>
+                <td><span class="status good">Never</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Monthly cost</th>
+                <td class="num">$0</td>
+                <td class="num">$140</td>
+                <td class="num">$95</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="latency">
+        <h2 id="latency">Latency under load</h2>
+        <figure>
+          <div class="chart">
+            <svg viewBox="0 0 640 220" role="img"
+              aria-label="p95 dispatch latency: Redis Streams 9 ms, Postgres 38 ms, managed queue 61 ms. All under the 100 ms target.">
+              <line class="axis" x1="150" y1="20" x2="150" y2="180" />
+              <line class="axis" x1="150" y1="180" x2="620" y2="180" />
+              <text x="140" y="55" text-anchor="end">Redis Streams</text>
+              <rect class="bar" x="150" y="38" width="42" height="26" rx="3" />
+              <text x="200" y="56">9 ms</text>
+              <text x="140" y="105" text-anchor="end">Postgres</text>
+              <rect class="bar highlight" x="150" y="88" width="179" height="26" rx="3" />
+              <text x="337" y="106">38 ms</text>
+              <text x="140" y="155" text-anchor="end">Managed queue</text>
+              <rect class="bar" x="150" y="138" width="287" height="26" rx="3" />
+              <text x="445" y="156">61 ms</text>
+              <text class="tick" x="150" y="200" text-anchor="middle">0</text>
+              <text class="tick" x="385" y="200" text-anchor="middle">50</text>
+              <text class="tick" x="620" y="200" text-anchor="end">100 ms</text>
+            </svg>
+          </div>
+          <figcaption>p95 dispatch latency at 2,000 jobs per minute. All three are well under the
+        100 ms target; Postgres is highlighted as the recommendation.</figcaption>
+        </figure>
+
+        <details>
+          <summary>Method</summary>
+          <p>Each option ran for ten minutes against the same producer, after a two-minute warm-up.
+        Latency is from insert to a worker's claim.</p>
+        </details>
+      </section>
+
+      <section class="prose" aria-labelledby="next">
+        <h2 id="next">Next steps</h2>
+        <ol>
+          <li>Add a <code>jobs</code> table with a partial index on pending rows.</li>
+          <li>Move the two existing cron jobs onto it.</li>
+          <li>Alert when the oldest pending job is older than one minute.</li>
+        </ol>
+      </section>
+
+      <section class="prose" aria-labelledby="sources">
+        <h2 id="sources">Sources</h2>
+        <ol class="sources">
+          <li
+            id="src-1"><a href="https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE">PostgreSQL
+        documentation: the locking clause</a></li>
+          <li
+            id="src-2"><a href="https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/">Redis
+        persistence</a></li>
+        </ol>
+      </section>
+
+      <footer class="page">Published by a Ryph agent. Figures measured on 7 October 2026.</footer>
+    </main>
+  </body>
+</html>

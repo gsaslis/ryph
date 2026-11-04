@@ -1,0 +1,24 @@
+{
+  "name": "@ryph/fake-gitlab",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "start": "bun --no-env-file src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@ryph/process": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@ryph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@ryph/webhooks": "workspace:*"
+  }
+}

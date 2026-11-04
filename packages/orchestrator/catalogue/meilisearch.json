@@ -1,0 +1,13 @@
+{
+  "id": "meilisearch",
+  "name": "Meilisearch",
+  "description": "Meilisearch. The one entry here that needs no capabilities at all — it never drops privileges, so `drop: ALL` is the whole story.",
+  "docs": "https://www.meilisearch.com/docs",
+  "versions": {
+    "v1.24": "getmeili/meilisearch:v1.24@sha256:d991eb07331e9d1f9cec7bc0f9523fd5d51aee3b223d997e0e66206361952056"
+  },
+  "defaultPort": 7700,
+  "capabilities": [],
+  "memory": "512m",
+  "env": ["MEILI_MASTER_KEY", "MEILI_ENV", "MEILI_NO_ANALYTICS", "MEILI_LOG_LEVEL"]
+}

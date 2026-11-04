@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "chatrooms_one_discord_bot" ON "chatrooms" USING btree ("bot_id") WHERE "chatrooms"."kind" = 'discord' AND "chatrooms"."archived_at" IS NULL;

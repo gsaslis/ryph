@@ -1,0 +1,110 @@
+{{- /*
+The priorities reserved capacity's placeholders run at. The control plane keeps one placeholder
+Deployment per size class in the runs namespace, each pod sized for the largest pod a run or check
+of its class can ask for, at one of the rungs below: every run, check and build pod runs at
+`ryph-workload` (0, above every rung) and preempts them, and they preempt nothing, not even each
+other. An evicted placeholder goes Pending, the autoscaler adds a node for it, and the room refills
+itself.
+
+A LADDER, not one class: the control plane puts each class's placeholder on a rung by the cpu it
+holds, half an octave per rung from 1 core. The scheduler preempts on the node whose highest-priority
+victim is lowest, so a run evicts the smallest placeholder that makes room for it. -10 at the bottom
+and not lower: the cluster autoscaler treats pods BELOW -10 as expendable and never scales up for
+them, so a preempted placeholder would never come back.
+
+ryph-workload and ryph-tool-host are 0, what a pod gets on a cluster with no `globalDefault` class.
+On a cluster WITH one, ordinary pods get its value: if it is positive they outrank a run and can
+preempt it mid-work (a run's Job never retries); if negative, a run that finds no room evicts
+ordinary pods, the control plane included. Either way set `priorityClasses.workloadValue` and
+`toolHostValue` to the default's value and keep every rung below it. A PriorityClass's value is
+immutable, so changing one is a delete and a re-create.
+
+Cluster-scoped and SHARED by every release on the cluster: the services name these classes
+literally, and a priority is a number on one cluster-wide scale, so a copy per release would isolate
+nothing. Exactly one release creates them (`priorityClasses.create`); the others set false.
+*/ -}}
+{{- if .Values.priorityClasses.create }}
+{{- $root := . -}}
+{{- range $rung := until 10 }}
+{{- include "ryph.priorityClass.check" (list $root (printf "ryph-reserved-capacity-%d" $rung) (sub $rung 10)) }}
+{{- end }}
+{{- include "ryph.priorityClass.check" (list . "ryph-workload" .Values.priorityClasses.workloadValue) }}
+{{- include "ryph.priorityClass.check" (list . "ryph-tool-host" .Values.priorityClasses.toolHostValue) }}
+{{- range $rung := until 10 }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ryph-reserved-capacity-{{ $rung }}
+  labels:
+    {{- include "ryph.labels.plain" $root | nindent 4 }}
+  {{- if $root.Values.priorityClasses.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+value: {{ sub $rung 10 }}
+preemptionPolicy: Never
+globalDefault: false
+description: Placeholders holding room for ryph runs, rung {{ $rung }} of 10 (smaller slots lower). Anything at ryph-workload evicts them.
+{{- end }}
+---
+# The priority every run, check and build pod names. It is named on the pods even at 0 because a
+# cluster whose default is -10 or lower would otherwise put real work level with, or below, the
+# placeholders, and reserved capacity would hold runs back instead of making room.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ryph-workload
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- if .Values.priorityClasses.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+value: {{ int .Values.priorityClasses.workloadValue }}
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: ryph runs, checks and builds. Evicts reserved capacity's placeholders.
+---
+# The priority hosted MCP servers and their tool guard name. Level with ryph-workload, so
+# placeholders never hold a tool server back, but it preempts nothing: one that found no room would
+# otherwise evict a run's warm slot (a whole node, for a few hundred millicores) where it should
+# have waited for the autoscaler like any other pod.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ryph-tool-host
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- if .Values.priorityClasses.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+value: {{ int .Values.priorityClasses.toolHostValue }}
+preemptionPolicy: Never
+globalDefault: false
+description: ryph's hosted MCP servers. Outranks reserved capacity's placeholders but evicts nothing.
+{{- end }}
+
+{{- /*
+Before Helm touches a class (with cluster access; `helm template` sees none and skips this), the two
+mistakes Helm would otherwise report late or obscurely: a class another release owns (exactly one
+release creates them), and a changed value, which the API server refuses as immutable — after Helm
+has already updated everything else in the upgrade. (list $ <name> <value>)
+*/ -}}
+{{- define "ryph.priorityClass.check" -}}
+{{- $root := index . 0 -}}
+{{- $name := index . 1 -}}
+{{- $pc := lookup "scheduling.k8s.io/v1" "PriorityClass" "" $name -}}
+{{- if $pc -}}
+{{- $ann := $pc.metadata.annotations | default dict -}}
+{{- $owner := get $ann "meta.helm.sh/release-name" -}}
+{{- $ownerNs := get $ann "meta.helm.sh/release-namespace" -}}
+{{- if not (and (eq $owner $root.Release.Name) (eq $ownerNs $root.Release.Namespace)) -}}
+{{- fail (printf "PriorityClass %s already exists and belongs to %s. Exactly one release per cluster creates the shared PriorityClasses: set priorityClasses.create=false for this one. To make this release their owner instead (the old owner uninstalled, its classes kept), hand them over first: for each ryph-reserved-capacity-0..9, ryph-workload and ryph-tool-host, kubectl annotate --overwrite priorityclass <name> meta.helm.sh/release-name=%s meta.helm.sh/release-namespace=%s && kubectl label --overwrite priorityclass <name> app.kubernetes.io/managed-by=Helm (README.md, \"Cluster-scoped objects\")." $name (ternary (printf "release %s/%s" $ownerNs $owner) "no Helm release" (ne $owner "")) $root.Release.Name $root.Release.Namespace) -}}
+{{- end -}}
+{{- if ne (int64 $pc.value) (int64 (index . 2)) -}}
+{{- fail (printf "PriorityClass %s has value %d and the values ask for %d, but a PriorityClass's value is immutable: the upgrade would fail after updating everything else. Delete it and upgrade straight after (kubectl delete priorityclass %s); pods already running keep their priority, and a run launched in between is refused until the class is back." $name (int64 $pc.value) (int64 (index . 2)) $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

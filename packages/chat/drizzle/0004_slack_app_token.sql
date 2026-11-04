@@ -1,0 +1,1 @@
+ALTER TABLE "chatrooms" ADD COLUMN "sealed_app_token" text;

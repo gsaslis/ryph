@@ -1,0 +1,148 @@
+{{- /*
+The memory service: the canon, the inbox and the signal log, on its own database. The control plane
+composes briefs and reports outcomes over its internal surface; the gateway forwards a run's memory
+tool calls to its MCP route; the app reads and writes the canon with a user bearer, which it verifies
+against the control plane's JWKS. Runs never reach it directly.
+*/ -}}
+{{- $v := .Values.memory -}}
+{{- $image := include "ryph.image" (list . .Values.images.memory) -}}
+{{- $secret := include "ryph.secretName" (list . "memory") -}}
+{{- $env := include "ryph.memory.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "memory") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "memory" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "memory"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if include "ryph.gitlab.ca" . }}
+        {{- include "ryph.gitlab.caVolume" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+      initContainers:
+        {{- /* Creates the database first, for servers that predate memory. */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/memory" "variable" "RYPH_MEMORY_DB" "owner" "memory" "secret" $secret "key" "RYPH_MEMORY_DB" "ensure" true) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: memory
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7440
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          # The only service here with a startup probe, because it is the only one that does real
+          # work before it listens: RYPH_MEMORY_EMBEDDINGS=local loads the ONNX runtime and the
+          # model off disk at boot. Until this succeeds the liveness probe is not run at all, so a
+          # slow first load on a cold node is not mistaken for a hung process. Three minutes.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          # ~270 MB for the embeddings runtime on top of the service's own. The one service with a
+          # memory limit by default: the ONNX runtime allocates outside the JS heap, so a runaway
+          # here would be the node's problem rather than the pod's.
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "ryph.gitlab.ca" . }}
+            {{- include "ryph.gitlab.caMount" . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "memory") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: memory
+  ports:
+    - name: http
+      port: 7440
+      targetPort: http
+
+{{- define "ryph.memory.env" -}}
+- name: RYPH_MEMORY_PORT
+  value: "7440"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+- name: RYPH_AUTH_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+# The platform's model: a credential minted on the proxy's control listener with
+# RYPH_PLATFORM_TOKEN (in the secret), spent on its data listener.
+- name: RYPH_MODEL_PROXY_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7420) }}
+- name: RYPH_MODEL_PROXY_CONTROL_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7421) }}
+# In-process embeddings from the weights baked into the image: hybrid search.
+- name: RYPH_MEMORY_EMBEDDINGS
+  value: local
+{{- if .Values.gitlab.enabled }}
+# The GitLab instance a repo-file ingest may read beside gitlab.com's.
+- name: RYPH_GITLAB_URL
+  value: {{ .Values.gitlab.url | default "https://gitlab.com" | quote }}
+{{- if include "ryph.gitlab.ca" . }}
+{{ include "ryph.gitlab.caEnv" . }}
+{{- end }}
+{{- end }}
+{{- include "ryph.db.secretEnv" (list . "memory" "RYPH_MEMORY_DB") }}
+{{- end -}}

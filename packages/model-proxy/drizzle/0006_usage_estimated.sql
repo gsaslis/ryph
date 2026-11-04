@@ -1,0 +1,1 @@
+ALTER TABLE "proxy_usage" ADD COLUMN "estimated" boolean DEFAULT false NOT NULL;

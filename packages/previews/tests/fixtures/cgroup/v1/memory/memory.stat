@@ -1,0 +1,6 @@
+cache 120000000
+rss 400000000
+inactive_file 1000
+total_cache 120000000
+total_rss 400000000
+total_inactive_file 104857600

@@ -1,0 +1,1 @@
+ALTER TABLE "environments" RENAME COLUMN "ryph_tree" TO "definition";

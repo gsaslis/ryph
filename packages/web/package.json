@@ -1,0 +1,29 @@
+{
+  "name": "@ryph/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=.env src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@ryph/logger": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "linkedom": "^0.18.13",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
+    "@ryph/shared": "workspace:*"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@ryph/sealed",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1"
+  }
+}

@@ -1,0 +1,6 @@
+anon 400000000
+file 120000000
+kernel 8000000
+sock 2097152
+active_file 20000000
+inactive_file 104857600

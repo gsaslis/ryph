@@ -1,0 +1,46 @@
+{
+  "name": "@ryph/host",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "up": "bun --env-file=.env src/main.ts",
+    "debug": "bun --env-file=.env --inspect-wait=127.0.0.1:9230 src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "db:push": "bun --env-file=.env x drizzle-kit push",
+    "db:studio": "bun --env-file=.env x drizzle-kit studio",
+    "db:push:history": "bun --env-file=.env x drizzle-kit push --config drizzle-history.config.ts",
+    "db:studio:history": "bun --env-file=.env x drizzle-kit studio --config drizzle-history.config.ts",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@ryph/auth": "workspace:*",
+    "@ryph/automations": "workspace:*",
+    "@ryph/chat": "workspace:*",
+    "@ryph/db": "workspace:*",
+    "@ryph/forge": "workspace:*",
+    "@ryph/historian": "workspace:*",
+    "@ryph/launcher": "workspace:*",
+    "@ryph/logger": "workspace:*",
+    "@ryph/mcp-gateway": "workspace:*",
+    "@ryph/memory": "workspace:*",
+    "@ryph/model-proxy": "workspace:*",
+    "@ryph/orchestrator": "workspace:*",
+    "@ryph/process": "workspace:*",
+    "@ryph/radicle": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@ryph/tunnel": "workspace:*",
+    "@ryph/web": "workspace:*",
+    "@ryph/webhooks": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "drizzle-kit": "0.31.10",
+    "@ryph/shared": "workspace:*"
+  }
+}

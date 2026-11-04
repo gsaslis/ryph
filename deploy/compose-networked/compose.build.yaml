@@ -1,0 +1,60 @@
+# Building the networked deployment's images from this checkout, layered over compose.yaml — what
+# `bun run compose:up` and `perf:up` do:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait   # from this directory
+#
+# One `build:` per image, on the service that names it first; every other service on the same
+# image (the migration jobs, the sanitizer, the fixture repository) runs the same local build,
+# because a build is tagged with the ref compose.yaml pulls. A later `docker compose pull` puts the
+# published images back.
+#
+# Of the images the launcher starts, the run gate and the tool guard are built here: small, and
+# their programs change with this checkout (the gate's route grammar is the launcher's). The agent
+# image, the universal image and the harness layer are NOT: the universal image is a machine with
+# every mainstream toolchain and takes a long time to build, so they are pulled at RYPH_VERSION,
+# or named outright for ones `bun run agent-image` built here:
+#
+#   RYPH_AGENT_IMAGE=ryph-agent:dev RYPH_ENV_BASE_IMAGE=ryph-universal:dev \
+#     RYPH_HARNESS_IMAGE=ryph-harness:dev bun run compose:up
+
+# The context is the repository root, two levels up; every Dockerfile path is relative to it.
+x-build: &build
+  context: ../..
+
+services:
+  artifact-thumbnails:
+    build: { <<: *build, dockerfile: images/browser/Dockerfile }
+  control-plane:
+    build: { <<: *build, dockerfile: images/control-plane/Dockerfile }
+  historian:
+    build: { <<: *build, dockerfile: images/historian/Dockerfile }
+  model-proxy:
+    build: { <<: *build, dockerfile: images/model-proxy/Dockerfile }
+  mcp-gateway:
+    build: { <<: *build, dockerfile: images/mcp-gateway/Dockerfile }
+  memory:
+    build: { <<: *build, dockerfile: images/memory/Dockerfile }
+  chat:
+    build: { <<: *build, dockerfile: images/chat/Dockerfile }
+  forge:
+    build: { <<: *build, dockerfile: images/forge/Dockerfile }
+  automations:
+    build: { <<: *build, dockerfile: images/automations/Dockerfile }
+  web:
+    build: { <<: *build, dockerfile: images/web/Dockerfile }
+  previews:
+    build: { <<: *build, dockerfile: images/previews/Dockerfile }
+  egress-proxy:
+    build: { <<: *build, dockerfile: images/egress-proxy/Dockerfile }
+  launcher:
+    build: { <<: *build, dockerfile: images/launcher/Dockerfile }
+  ryph-run-gate:
+    build: { <<: *build, dockerfile: images/run-gate/Dockerfile }
+  ryph-tool-guard:
+    build: { <<: *build, dockerfile: images/tool-guard/Dockerfile }
+  app:
+    build: { <<: *build, dockerfile: images/app/Dockerfile }
+  radicle-node:
+    build: { <<: *build, dockerfile: images/radicle-node/Dockerfile }
+  radicle:
+    build: { <<: *build, dockerfile: images/radicle/Dockerfile }

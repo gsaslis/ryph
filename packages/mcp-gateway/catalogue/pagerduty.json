@@ -1,0 +1,74 @@
+{
+  "kind": "remote",
+  "id": "pagerduty",
+  "name": "PagerDuty",
+  "description": "Incidents, services, schedules and on-call in your PagerDuty account.",
+  "docs": "https://docs.pagerduty.com/developer/mcp-tooling-remote-server",
+  "brand": {
+    "color": "#06AC38",
+    "logo": "<svg fill=\"#06AC38\" role=\"img\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><title>PagerDuty</title><path d=\"M16.965 1.18C15.085.164 13.769 0 10.683 0H3.73v14.55h6.926c2.743 0 4.8-.164 6.61-1.37 1.975-1.303 3.004-3.484 3.004-6.007 0-2.716-1.262-4.896-3.305-5.994zm-5.5 10.326h-4.21V3.113l3.977-.027c3.62-.028 5.43 1.234 5.43 4.128 0 3.113-2.248 4.292-5.197 4.292zM3.73 17.61h3.525V24H3.73Z\"/></svg>"
+  },
+  "defaultOff": [
+    "create_incident",
+    "manage_incidents",
+    "add_responders",
+    "add_note_to_incident",
+    "start_incident_workflow",
+    "create_service",
+    "update_service",
+    "create_team",
+    "update_team",
+    "delete_team",
+    "add_team_member",
+    "remove_team_member",
+    "create_user",
+    "create_schedule",
+    "update_schedule",
+    "create_schedule_override",
+    "delete_schedule_v3",
+    "create_alert_grouping_setting",
+    "update_alert_grouping_setting",
+    "delete_alert_grouping_setting",
+    "create_escalation_policy",
+    "update_escalation_policy",
+    "update_event_orchestration_router",
+    "append_event_orchestration_router_rule",
+    "create_status_page_post",
+    "create_status_page_post_update",
+    "create_webhook_subscription",
+    "update_webhook_subscription",
+    "delete_webhook_subscription"
+  ],
+  "url": "https://{region}/mcp",
+  "settings": [
+    {
+      "key": "region",
+      "label": "Region",
+      "kind": "choice",
+      "default": "us",
+      "options": [
+        {
+          "value": "us",
+          "label": "US",
+          "url": "mcp.pagerduty.com"
+        },
+        {
+          "value": "eu",
+          "label": "EU",
+          "url": "mcp.eu.pagerduty.com"
+        }
+      ]
+    }
+  ],
+  "credential": {
+    "delivery": "headers",
+    "headers": {
+      "Authorization": {
+        "label": "User API token",
+        "secret": true,
+        "prefix": "Token token=",
+        "description": "From My Profile → User Settings → API Access. Tokens belong to one region."
+      }
+    }
+  }
+}

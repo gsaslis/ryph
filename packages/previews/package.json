@@ -1,0 +1,24 @@
+{
+  "name": "@ryph/previews",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=.env src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@ryph/logger": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@ryph/shared": "workspace:*",
+    "@ryph/tunnel": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "ws": "8.21.3"
+  }
+}

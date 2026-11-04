@@ -1,0 +1,201 @@
+{{- /*
+The app: the SvelteKit BFF, and the only thing a browser talks to. It proxies /api/v1/* to the
+services that own those paths, so it reaches the model-proxy's and the mcp-gateway's CONTROL
+listeners and never their data ones.
+*/ -}}
+{{- $v := .Values.app -}}
+{{- $env := include "ryph.app.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "app") | nindent 4 }}
+spec:
+  # Two, in different zones where the cluster has them, and a rollout only ever adds before it
+  # removes: the load balancer then always has a healthy endpoint, including while a node is
+  # drained under the other one. The app holds nothing in-process — sessions are cookies.
+  replicas: {{ $v.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  # Ready is not the same as reachable: a container-native load balancer starts sending to a new
+  # pod only once its own health check has passed, tens of seconds after the kubelet's. Counting a
+  # pod available only after a minute of readiness holds the old one in rotation until the new
+  # one is really in. Without it the rollout outruns the balancer: the intermittent 502.
+  minReadySeconds: 60
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "app" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "app"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The pre-stop pause (60s) plus the server's own drain (SHUTDOWN_TIMEOUT, 30s by default),
+      # with a margin: past this the kubelet SIGKILLs.
+      terminationGracePeriodSeconds: 105
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: app
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: {{ include "ryph.image" (list . .Values.images.app) }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          # A stopping pod leaves the Service's endpoints at once, but a load balancer that
+          # addresses pods directly learns that tens of seconds later and keeps sending to a
+          # listener that closed on SIGTERM. The node server has no pre-stop switch of its own, so
+          # the pause is the pod's.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "60"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          # RYPH_PROXY_SECRET, which the control plane holds too, and the read-only key for the
+          # assets bucket when there is one. Required: without the proxy secret every visitor shares
+          # one anonymous rate-limit budget upstream, so the app refuses to start rather than run
+          # that way.
+          envFrom:
+            - secretRef:
+                name: {{ include "ryph.secretName" (list . "app") }}
+          # Its /readyz deliberately does not probe the control plane: during an outage the BFF's
+          # job is to render the error, not to vanish from the load balancer.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+# Voluntary disruptions — a node drain, a consolidation — take one at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "app") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: app
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+
+{{- define "ryph.app.env" -}}
+- name: PORT
+  value: "3000"
+# The public origin, as a browser types it.
+- name: ORIGIN
+  value: {{ .Values.appUrl | quote }}
+{{- with .Values.app.addressHeader }}
+# Behind a proxy that appends "<client>, <proxy>" to X-Forwarded-For, the caller is the XFF_DEPTH-th
+# entry from the right; without this every visitor shares one address upstream.
+- name: ADDRESS_HEADER
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.app.xffDepth }}
+- name: XFF_DEPTH
+  value: {{ . | toString | quote }}
+{{- end }}
+# Behind a load balancer that reuses a backend connection for minutes: Node's default keep-alive of
+# 5s closes an idle one first, and a request sent down it in that instant is answered with an empty
+# 503 by the balancer itself. Above 620s, and the headers timeout above the keep-alive one.
+- name: KEEP_ALIVE_TIMEOUT
+  value: "620"
+- name: HEADERS_TIMEOUT
+  value: "630"
+# adapter-node refuses a request body over 512 KiB by default, and `ryph checks` uploads a git bundle
+# through the /api proxy: up to the forge's 100 MiB cap, plus a margin.
+- name: BODY_SIZE_LIMIT
+  value: "110M"
+- name: RYPH_API_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+- name: RYPH_HISTORY_URL
+  value: {{ include "ryph.url" (list . "historian" "services" 7413) }}
+- name: RYPH_MODEL_PROXY_CONTROL_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7421) }}
+- name: RYPH_MCP_GATEWAY_CONTROL_URL
+  value: {{ include "ryph.url" (list . "mcp-gateway" "services" 7431) }}
+- name: RYPH_MEMORY_URL
+  value: {{ include "ryph.url" (list . "memory" "services" 7440) }}
+- name: RYPH_CHAT_URL
+  value: {{ include "ryph.url" (list . "chat" "services" 7450) }}
+- name: RYPH_AUTOMATIONS_URL
+  value: {{ include "ryph.url" (list . "automations" "services" 7414) }}
+# The ingestion door as a SENDER reaches it, shown next to a webhook automation.
+- name: PUBLIC_AUTOMATIONS_ORIGIN
+  value: {{ .Values.app.automationsOrigin | default (ternary .Values.appUrl "http://localhost:7414" (eq (include "ryph.routesHooks" .) "true")) | quote }}
+# Where to look for a built chunk this image does not have, which is what a page from the other
+# build asks for while a rollout has two live. Empty means 404.
+- name: RYPH_ASSET_FALLBACK_URL
+  value: {{ .Values.app.assetFallback.url | quote }}
+{{- with .Values.app.assetFallback.bucket }}
+- name: RYPH_ASSET_BUCKET
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.app.assetFallback.region }}
+- name: RYPH_ASSET_REGION
+  value: {{ . | quote }}
+{{- end }}
+# Read in the browser, so they carry no secret. Empty leaves the GitHub App dark.
+- name: PUBLIC_GITHUB_APP_NAME
+  value: {{ ternary .Values.github.appName "" .Values.github.enabled | quote }}
+- name: PUBLIC_GITHUB_CLIENT_ID
+  value: {{ ternary .Values.github.clientId "" .Values.github.enabled | quote }}
+# GitLab's sign-in: the instance the browser is sent to, and the OAuth application's id. Empty
+# leaves GitLab sign-in dark.
+- name: PUBLIC_GITLAB_URL
+  value: {{ ternary (.Values.gitlab.url | default "https://gitlab.com") "" .Values.gitlab.enabled | quote }}
+- name: PUBLIC_GITLAB_CLIENT_ID
+  value: {{ ternary .Values.gitlab.clientId "" .Values.gitlab.enabled | quote }}
+{{- end -}}

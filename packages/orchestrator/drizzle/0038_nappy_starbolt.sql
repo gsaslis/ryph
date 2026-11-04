@@ -1,0 +1,1 @@
+CREATE INDEX "environments_by_created" ON "environments" USING btree ("created_at","id");

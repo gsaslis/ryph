@@ -1,0 +1,69 @@
+{
+  "kind": "remote",
+  "id": "sentry",
+  "name": "Sentry",
+  "description": "Issues, events, traces and releases in your Sentry organization.",
+  "docs": "https://github.com/getsentry/sentry-mcp",
+  "brand": {
+    "color": "#7553FF",
+    "logo": "<svg fill=\"#7553FF\" role=\"img\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><title>Sentry</title><path d=\"M13.91 2.505c-.873-1.448-2.972-1.448-3.844 0L6.904 7.92a15.478 15.478 0 0 1 8.53 12.811h-2.221A13.301 13.301 0 0 0 5.784 9.814l-2.926 5.06a7.65 7.65 0 0 1 4.435 5.848H2.194a.365.365 0 0 1-.298-.534l1.413-2.402a5.16 5.16 0 0 0-1.614-.913L.296 19.275a2.182 2.182 0 0 0 .812 2.999 2.24 2.24 0 0 0 1.086.288h6.983a9.322 9.322 0 0 0-3.845-8.318l1.11-1.922a11.47 11.47 0 0 1 4.95 10.24h5.915a17.242 17.242 0 0 0-7.885-15.28l2.244-3.845a.37.37 0 0 1 .504-.13c.255.14 9.75 16.708 9.928 16.9a.365.365 0 0 1-.327.543h-2.287c.029.612.029 1.223 0 1.831h2.297a2.206 2.206 0 0 0 1.922-3.31z\"/></svg>"
+  },
+  "defaultOff": [
+    "update_issue",
+    "add_issue_note",
+    "link_issue",
+    "unlink_issue",
+    "analyze_issue_with_seer",
+    "create_project",
+    "update_project",
+    "create_team",
+    "add_team_to_project",
+    "remove_team_from_project",
+    "create_dsn",
+    "update_dsn",
+    "create_alert_rule",
+    "update_alert_rule",
+    "delete_alert_rule",
+    "create_metric_monitor",
+    "update_metric_monitor",
+    "delete_metric_monitor",
+    "create_uptime_monitor",
+    "update_uptime_monitor",
+    "delete_uptime_monitor",
+    "delete_monitor_environment",
+    "onboarding_status_update"
+  ],
+  "url": "https://mcp.sentry.dev/mcp{organization}{project}",
+  "settings": [
+    {
+      "key": "organization",
+      "label": "Organization slug",
+      "kind": "text",
+      "placeholder": "acme",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,49}$",
+      "urlPrefix": "/"
+    },
+    {
+      "key": "project",
+      "label": "Project slug",
+      "kind": "text",
+      "placeholder": "backend",
+      "optional": true,
+      "description": "Limits the server to one project.",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,99}$",
+      "urlPrefix": "/"
+    }
+  ],
+  "credential": {
+    "delivery": "headers",
+    "headers": {
+      "Authorization": {
+        "label": "User auth token",
+        "secret": true,
+        "prefix": "Sentry-Bearer ",
+        "placeholder": "sntryu_…",
+        "description": "A token with read scopes is enough unless you allow write tools."
+      }
+    }
+  }
+}

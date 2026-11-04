@@ -1,0 +1,241 @@
+{{- /*
+DEV ONLY: a Postgres and an object store in the cluster, the networked compose's postgres and objects,
+in a namespace of their own. Fixed credentials from values, one small PVC each, no
+backups. A production install points `postgres` and `objectStore` at real services instead.
+
+Own namespace, so the services namespace's default-deny ingress leaves them alone; the runs
+namespace's egress policy already denies every private range, which covers these. No pod here mounts
+a service account token: none of them talks to the Kubernetes API.
+*/ -}}
+{{- if .Values.devState.enabled }}
+{{- $s := .Values.devState -}}
+{{- if not $s.postgres.password }}{{ fail "devState.postgres.password is required with devState.enabled" }}{{ end -}}
+{{- if and .Values.namespaces.create (eq (include "ryph.ns.state" .) .Release.Namespace) }}
+{{- fail (printf "the release namespace %q is the dev state namespace the chart creates; install the release elsewhere" .Release.Namespace) }}
+{{- end }}
+{{- if .Values.namespaces.create }}
+{{- include "ryph.namespace" (list . "state" (dict "pod-security.kubernetes.io/enforce" "baseline")) }}
+---
+{{- end }}
+# Nothing in the cluster reaches the dev state but the release's own services (their migrate init
+# containers included): every pod in the services namespace, and no other namespace's. A run's own
+# egress policy already denies it; this denies everyone else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: from-services
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [postgres, objects]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ryph.ns.services" . }}
+      ports:
+        - port: 5432
+        - port: 9000
+---
+# One database per service, as the networked compose's init-databases does. `ryph` itself comes from
+# POSTGRES_DB; owners added later (chat, radicle) create their own at migration time.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+data:
+  10-databases.sql: |
+    CREATE DATABASE ryph_history;
+    CREATE DATABASE ryph_keys;
+    CREATE DATABASE ryph_mcp;
+    CREATE DATABASE ryph_forge;
+    CREATE DATABASE ryph_automations;
+    CREATE DATABASE ryph_memory;
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: {{ $s.postgres.image }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ $s.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ $s.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: ryph
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            # Over TCP: the init-script server on a fresh volume listens on the socket only.
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", {{ $s.postgres.user | quote }}, "-d", "ryph"]
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ $s.postgres.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Persistent: patch bundles are the forge's durable output, and create-bucket is a Job that
+# completed, not something that brings the bucket back.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: objects-data
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ $s.objects.storage }}
+---
+# SeaweedFS, as the networked compose runs it (MinIO stopped publishing community images in October
+# 2025 and `minio/minio` and `minio/mc` now 404 on Docker Hub). `server -s3` runs master, volume,
+# filer and the S3 gateway in one process. Only the S3 port answers on the network: master, volume
+# and filer serve unauthenticated reads and writes of every object, so they bind to loopback.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: objects
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One store on one volume: the old pod lets go of it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: objects
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: objects
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: seaweedfs
+          image: {{ $s.objects.image }}
+          args: ["server", "-dir=/data", "-s3", "-s3.port=9000", "-ip=127.0.0.1", "-ip.bind=127.0.0.1", "-s3.ip.bind=0.0.0.0", "-s3.port.iceberg=0", "-s3.port.lance=0"]
+          env:
+            # The S3 gateway's sole identity. With neither set it serves anonymously.
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ required "devState.objects.accessKey is required with devState.enabled" $s.objects.accessKey | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ required "devState.objects.secretKey is required with devState.enabled" $s.objects.secretKey | quote }}
+            # Makes the S3 gateway's gRPC IAM API demand a signed token instead of answering anyone.
+            - name: WEED_JWT_FILER_SIGNING_KEY
+              value: {{ required "devState.objects.signingKey is required with devState.enabled" $s.objects.signingKey | quote }}
+          ports:
+            - name: s3
+              containerPort: 9000
+          # The bucket, made once the master answers, through the shell on loopback (the master
+          # listens nowhere else). Exits 0 on a bucket that already exists. Real S3 does not
+          # create a bucket on first PUT, so neither does this stand-in.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - for i in $(seq 1 90); do echo "s3.bucket.create -name {{ .Values.objectStore.bucket }}" | weed shell -master=127.0.0.1:9333 && exit 0; sleep 2; done; exit 1
+          readinessProbe:
+            # /healthz on the S3 port: an unauthenticated read of `/` is a 403 here.
+            httpGet:
+              path: /healthz
+              port: s3
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: objects-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: objects
+  namespace: {{ include "ryph.ns.state" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: objects
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+{{- end }}

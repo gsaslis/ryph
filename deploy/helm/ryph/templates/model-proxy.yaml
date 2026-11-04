@@ -1,0 +1,121 @@
+{{- /*
+The model-proxy: the one holder of RYPH_SECRETS_KEY. Two listeners, and the NetworkPolicies are what
+keep them apart: runs reach :7420 (data, spending a run's virtual key) and only the control plane,
+the app and memory reach :7421 (control, managing keys and minting credentials).
+*/ -}}
+{{- $v := .Values.modelProxy -}}
+{{- $image := include "ryph.image" (list . .Values.images.modelProxy) -}}
+{{- $secret := include "ryph.secretName" (list . "modelProxy") -}}
+{{- $env := include "ryph.modelProxy.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-proxy
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "model-proxy") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: model-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "model-proxy" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "modelProxy"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+      initContainers:
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/model-proxy" "variable" "RYPH_DB" "owner" "modelProxy" "secret" $secret "key" "RYPH_DB") | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: model-proxy
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: data
+              containerPort: 7420
+            - name: control
+              containerPort: 7421
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: control
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: control
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-proxy
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "model-proxy") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: model-proxy
+  ports:
+    - name: data
+      port: 7420
+      targetPort: data
+    - name: control
+      port: 7421
+      targetPort: control
+
+{{- define "ryph.modelProxy.env" -}}
+- name: RYPH_MODEL_PROXY_PORT
+  value: "7420"
+- name: RYPH_MODEL_PROXY_CONTROL_PORT
+  value: "7421"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+# What a RUN dials as its provider: the data listener, by its cross-namespace name.
+# (RYPH_MODEL_SPEND_CEILING_USD, a rolling spend cap, is an extraEnv: a cap, not a credential.)
+- name: RYPH_MODEL_PROXY_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7420) }}
+- name: RYPH_AUTH_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+{{- include "ryph.db.secretEnv" (list . "modelProxy" "RYPH_DB") }}
+{{- end -}}

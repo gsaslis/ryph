@@ -1,0 +1,75 @@
+{{- /*
+What the control plane may do in the runs namespace, and who a run is while it runs.
+packages/orchestrator/docs/kubernetes.md explains each grant.
+*/ -}}
+# The run pods' identity. Its token is never mounted (the provisioner sets
+# automountServiceAccountToken: false on every pod), and it must stay bound to no cloud identity,
+# so a metadata server has nothing to hand a run either. Do not bind it to one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ryph-run
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ryph-provisioner
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+rules:
+  # `list` for check suites: the orphan sweep finds every check Job by its component label, since
+  # a suite's Job outlives the process that launched it.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+  # create only: the control plane writes each run's Secret and never reads one back.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  # A hard kill deletes the run's pod by label — and reads its container statuses first, which is
+  # a `list` with a label selector. The same `list` finds a check suite's pod: a suite's verdict is
+  # each check container's exit code in its pod's status, and its output that container's log.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Reserved capacity: one placeholder Deployment per size class, server-side applied whole and
+  # deleted when its class drops to zero. `create` because an apply that creates is authorized as
+  # a create; `list` finds the stale ones by label. No new power: this Role already creates Jobs,
+  # i.e. pods, here.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "create", "patch", "delete"]
+  # And the one Lease whose holder is the replica that applies them, so the old and the new
+  # configuration of a rollout never take turns. `create` cannot be narrowed to a name, since RBAC
+  # authorizes it before the object has one; the rest is this Lease alone.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["ryph-reserved-capacity"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ryph-provisioner
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ryph-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: control-plane
+    namespace: {{ include "ryph.ns.services" . }}

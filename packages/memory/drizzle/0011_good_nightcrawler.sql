@@ -1,0 +1,1 @@
+ALTER TABLE "memory_runs" ADD COLUMN "agent_only" boolean DEFAULT false NOT NULL;

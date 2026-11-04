@@ -1,0 +1,22 @@
+{
+  "name": "@ryph/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./testing": "./src/testing.ts",
+    "./ensure": "./src/ensure.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "drizzle-orm": "^0.44.7",
+    "postgres": "^3.4.9"
+  }
+}

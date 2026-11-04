@@ -1,0 +1,2 @@
+ALTER TABLE "environments" ADD COLUMN "machine_image" text;--> statement-breakpoint
+CREATE INDEX "environments_images_to_remove" ON "environments" USING btree ("updated_at","id") WHERE "environments"."images_removed_at" IS NULL AND "environments"."status" IN ('superseded', 'failed');

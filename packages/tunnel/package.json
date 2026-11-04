@@ -1,0 +1,20 @@
+{
+  "name": "@ryph/tunnel",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@std/assert": "npm:@jsr/std__assert@1"
+  },
+  "devDependencies": {
+    "@ryph/service": "workspace:*"
+  }
+}

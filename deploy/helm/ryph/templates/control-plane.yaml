@@ -1,0 +1,365 @@
+{{- /*
+The control plane: the orchestrator with auth mounted. It is the one service with a Kubernetes
+identity worth having: it launches every run as a Job in the runs namespace (runs.yaml grants
+exactly that) and every environment build as one in the builds namespace (builds.yaml), reading its
+token, CA and API address from its own pod.
+
+Every peer URL is the service's cross-namespace name (<svc>.<services ns>.svc), because the control
+plane hands several of them to runs verbatim, and a run pod in the runs namespace resolves no bare
+name there. What this process dials and what a run dials are therefore the same string.
+*/ -}}
+{{- $v := .Values.controlPlane -}}
+{{- $image := include "ryph.image" (list . .Values.images.controlPlane) -}}
+{{- $secret := include "ryph.secretName" (list . "controlPlane") -}}
+{{- $env := include "ryph.controlPlane.env" . | fromYamlArray -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: control-plane
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with $v.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "control-plane" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "controlPlane"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      serviceAccountName: control-plane
+      # Its token goes to the control-plane container alone (ryph.apiToken.volume says why).
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # RYPH_PRE_STOP_MS, then the 25s drain deadline, then room to exit on its own.
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        # The sanitizer's group: what lets the control plane open the supervisor's socket.
+        supplementalGroups: [1995]
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # The artifact sanitizer supervisor's socket (images/control-plane/sanitizer.sh).
+        - name: sanitizer-socket
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: sanitizer-tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- include "ryph.apiToken.volume" . | nindent 8 }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+        {{- end }}
+      initContainers:
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/orchestrator" "variable" "RYPH_DB" "owner" "controlPlane" "secret" $secret "key" "RYPH_DB") | nindent 8 }}
+        {{- end }}
+        # The artifact sanitizer supervisor, as a native sidecar: started (its socket open) before
+        # the control plane, stopped after it, restarted on its own if it dies. Its own uid and PID
+        # namespace keep every sanitizer process it starts from signalling the control plane, which
+        # node's permission model does not stop; its own memory request keeps a sanitizer that
+        # balloons from taking the control plane down too. It holds no secret.
+        - name: sanitizer
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          restartPolicy: Always
+          command: ["/sanitizer.sh"]
+          env:
+            - name: RYPH_ARTIFACT_SANITIZER_CONFINED
+              value: required
+          volumeMounts:
+            - name: sanitizer-socket
+              mountPath: /run/ryph-sanitizer
+            - name: sanitizer-tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "test \"$(stat -c %a /run/ryph-sanitizer/s/supervisor.sock)\" = 660"]
+            periodSeconds: 1
+            failureThreshold: 60
+          resources:
+            {{- toYaml $v.sanitizerResources | nindent 12 }}
+          securityContext:
+            runAsUser: 1995
+            runAsGroup: 1995
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: control-plane
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          volumeMounts:
+            # Read-only: connecting to the socket needs no more.
+            - name: sanitizer-socket
+              mountPath: /run/ryph-sanitizer
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- include "ryph.apiToken.mount" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 7411
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: control-plane
+  ports:
+    - name: http
+      port: 7411
+      targetPort: http
+
+{{- define "ryph.controlPlane.env" -}}
+- name: RYPH_PORT
+  value: "7411"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+# Set in the image too: where the sanitizer sidecar's supervisor listens.
+- name: RYPH_ARTIFACT_SANITIZER_SOCKET
+  value: /run/ryph-sanitizer/s/supervisor.sock
+{{- if .Values.artifactThumbnails.enabled }}
+- name: RYPH_ARTIFACT_THUMBNAIL_URL
+  value: {{ include "ryph.url" (list . "artifact-thumbnails" "services" 7491) }}
+{{- end }}
+- name: RYPH_MODEL_PROXY_CONTROL_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7421) }}
+# The background model, for the titles of tasks nobody named: a credential minted on the proxy's
+# control listener with RYPH_PLATFORM_TOKEN (in the secret), spent here.
+- name: RYPH_MODEL_PROXY_DATA_URL
+  value: {{ include "ryph.url" (list . "model-proxy" "services" 7420) }}
+- name: RYPH_MCP_GATEWAY_CONTROL_URL
+  value: {{ include "ryph.url" (list . "mcp-gateway" "services" 7431) }}
+- name: RYPH_HISTORY_URL
+  value: {{ include "ryph.url" (list . "historian" "services" 7413) }}
+- name: RYPH_MEMORY_URL
+  value: {{ include "ryph.url" (list . "memory" "services" 7440) }}
+- name: RYPH_CHAT_URL
+  value: {{ include "ryph.url" (list . "chat" "services" 7450) }}
+- name: RYPH_FORGE_URL
+  value: {{ include "ryph.url" (list . "forge" "services" 7412) }}
+# The web tools: the gateway wires them (RYPH_WEB_URL there) and this process is told so it can
+# scope the row into every tool-capable agent's runs. It asks the gateway whether the row really
+# exists before it believes this, so env skew degrades to "no web tools" and a log line.
+- name: RYPH_WEB_TOOLS
+  value: "on"
+{{- if include "ryph.forgeTools" . }}
+# Agents may hold a forge policy, served by the gateway through the forge's GitHub App, GitLab bot
+# or Radicle key. Plain env rather than a Secret value: it is a switch, not a credential.
+- name: RYPH_FORGE_TOOLS
+  value: "on"
+{{- end }}
+# What a run dials. The pod's own hostname is not in cluster DNS, which is also why a cancel reaches
+# a run on its heartbeat reply rather than by push.
+- name: RYPH_PUBLIC_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+- name: RYPH_GIT_GATEWAY_URL
+  value: {{ include "ryph.url" (list . "forge" "services" 7412) }}
+# The way out, as a RUN dials it — cross-namespace, because the proxy lives alone in the egress
+# namespace. RYPH_EGRESS itself is left at its default (`proxy`): the boundary is on unless an
+# operator says otherwise, and RYPH_EGRESS_KEY rides the Secret.
+- name: RYPH_EGRESS_PROXY_URL
+  value: {{ include "ryph.url" (list . "egress-proxy" "egress" 7460) }}
+- name: RYPH_PROVISIONER
+  value: kubernetes
+- name: RYPH_K8S_NAMESPACE
+  value: {{ include "ryph.ns.runs" . }}
+- name: RYPH_K8S_SERVICE_ACCOUNT
+  value: ryph-run
+{{- with .Values.runs.runtimeClassName }}
+# Every run in a sandboxed runtime: its own kernel, not the node's.
+- name: RYPH_K8S_RUNTIME_CLASS
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.runs.workVolumeStorageClass }}
+- name: RYPH_K8S_WORK_VOLUME_CLASS
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.runs.services }}
+# A repo's .ryph/services.yml is read, and its databases run as sidecars in the run's pod. Off by
+# default: on means running images a repo picks, from the catalogue, on this cluster.
+- name: RYPH_SERVICES
+  value: "on"
+{{- end }}
+# Size classes: what a run gets, picked per repo or workspace by an admin. A placeholder for
+# reserved capacity asks for its class's quantities plus room for RYPH_SERVICE_MAX services.
+- name: RYPH_RUN_SIZES
+  value: {{ .Values.runs.sizes | quote }}
+- name: RYPH_RUN_SIZE_DEFAULT
+  value: {{ .Values.runs.defaultSize | quote }}
+# Environment builds: off, every run uses RYPH_AGENT_IMAGE. Where a build's Job goes and who it
+# runs as are spelled out rather than left to the defaults, so they follow the namespaces.
+- name: RYPH_ENVIRONMENTS
+  value: {{ include "ryph.onOff" .Values.environments.enabled | quote }}
+- name: RYPH_ENV_BUILD_NAMESPACE
+  value: {{ include "ryph.ns.builds" . }}
+- name: RYPH_ENV_BUILD_SERVICE_ACCOUNT
+  value: ryph-builder
+- name: RYPH_ENV_BRANCH_BUILD_SERVICE_ACCOUNT
+  value: ryph-branch-builder
+{{- with .Values.environments.builder }}
+- name: RYPH_ENV_BUILDER
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.environments.runtimeClassName }}
+- name: RYPH_ENV_BUILD_RUNTIME_CLASS
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.environments.allowUnsandboxed }}
+# The builder refuses to build without a runtime class unless told the node's kernel will do.
+- name: RYPH_ENV_BUILD_ALLOW_UNSANDBOXED
+  value: "on"
+{{- end }}
+{{- with .Values.environments.buildSize }}
+- name: RYPH_ENV_BUILD_SIZE
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.environments.concurrency }}
+- name: RYPH_ENV_BUILD_CONCURRENCY
+  value: {{ . | toString | quote }}
+{{- end }}
+{{- with .Values.environments.timeout }}
+- name: RYPH_ENV_BUILD_TIMEOUT
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.environments.registry }}
+- name: RYPH_ENV_REGISTRY
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.environments.branchRegistry }}
+- name: RYPH_ENV_BRANCH_REGISTRY
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.environments.enabled }}
+# What an environment build is made of: the harness layer it copies on last, and the universal
+# image a repo's Dockerfile starts FROM.
+- name: RYPH_HARNESS_IMAGE
+  value: {{ include "ryph.image" (list . .Values.images.harness) }}
+- name: RYPH_ENV_BASE_IMAGE
+  value: {{ include "ryph.image" (list . .Values.images.universal) }}
+{{- end }}
+# Checks: a repo's .ryph/checks.yml, read at the change's base and run against its head in a check
+# pod of its own — one Job per suite in the runs namespace, under the check-run-egress policy.
+- name: RYPH_CHECKS
+  value: {{ include "ryph.onOff" .Values.checks.enabled | quote }}
+{{- with .Values.checks.size }}
+- name: RYPH_CHECKS_SIZE
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.checks.ownSizes }}
+- name: RYPH_CHECKS_OWN_SIZES
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.checks.computeClass }}
+- name: RYPH_K8S_CHECK_COMPUTE_CLASS
+  value: {{ . | quote }}
+{{- end }}
+- name: RYPH_APP_URL
+  value: {{ .Values.appUrl | quote }}
+# Every harness kind launches on this one image.
+- name: RYPH_AGENT_IMAGE
+  value: {{ include "ryph.image" (list . .Values.images.agent) }}
+{{- if .Values.runs.browserSidecar }}
+# The browser sidecar a browser agent's run gets, on top of the run's size class. The image must
+# pull: an unpullable one holds a browser run's pod in Init until the run is lost.
+- name: RYPH_BROWSER_IMAGE
+  value: {{ include "ryph.image" (list . .Values.images.browser) }}
+{{- end }}
+# A run's images, and build logs when builds are on, live in the forge's bucket beside the patches
+# (`attachments/`, `environments/`), so every replica serves what another took in.
+- name: RYPH_PATCH_STORE
+  value: s3
+- name: RYPH_S3_ENDPOINT
+  value: {{ include "ryph.objectStore.endpoint" . | quote }}
+- name: RYPH_S3_BUCKET
+  value: {{ .Values.objectStore.bucket | quote }}
+- name: RYPH_S3_REGION
+  value: {{ .Values.objectStore.region | quote }}
+- name: RYPH_S3_FORCE_PATH_STYLE
+  value: {{ .Values.objectStore.forcePathStyle | toString | quote }}
+{{- with .Values.objectStore.prefix }}
+- name: RYPH_S3_PREFIX
+  value: {{ . | quote }}
+{{- end }}
+{{- include "ryph.objectStore.secretEnv" . }}
+{{- include "ryph.db.secretEnv" (list . "controlPlane" "RYPH_DB") }}
+{{- if .Values.previews.enabled }}
+# The previews service's API port, which only the control plane (and the other previews pods)
+# reach; and its tunnel port as a run dials it, the base of a runner's tunnel URL, so a run is sent
+# to its own release's previews, on the one port its egress rule lets it reach.
+- name: RYPH_PREVIEWS_URL
+  value: {{ include "ryph.url" (list . "previews" "services" 7493) }}
+- name: RYPH_RUN_PREVIEWS_URL
+  value: {{ include "ryph.url" (list . "previews" "services" 7491) }}
+{{- if gt (int (.Values.previews.replicas | default 1)) 1 }}
+# Each previews replica's own Service: the only tunnel address the service may hand a runner.
+- name: RYPH_PREVIEWS_PEER_HOST
+  value: {{ include "ryph.previews.peerHost" . | quote }}
+{{- end }}
+- name: RYPH_PREVIEWS_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ryph.secretName" (list . "previews") }}
+      key: RYPH_PREVIEWS_TOKEN
+{{- end }}
+{{- end -}}

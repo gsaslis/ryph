@@ -1,0 +1,19 @@
+{{- /*
+`extraObjects`: anything a cluster needs beside the chart, each rendered through `tpl`. A list, or a
+map of name → object (maps merge across values files, so a shared file and a per-release file can
+each add their own; a null entry removes one).
+*/ -}}
+{{- $objects := .Values.extraObjects -}}
+{{- if kindIs "map" $objects -}}
+{{- $list := list -}}
+{{- range $k := keys $objects | sortAlpha }}{{ with get $objects $k }}{{ $list = append $list . }}{{ end }}{{ end -}}
+{{- $objects = $list -}}
+{{- end -}}
+{{- range $objects }}
+---
+{{- if kindIs "string" . }}
+{{ tpl . $ }}
+{{- else }}
+{{ tpl (toYaml .) $ }}
+{{- end }}
+{{- end }}

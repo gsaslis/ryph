@@ -1,0 +1,449 @@
+{{- /*
+The OPTIONAL previews service: a browser opens a dev server an agent runs, at `<id>.<domain>`, over a
+WebSocket tunnel the run's runner dialled OUT to this pod. A run pod takes no ingress (its service
+sidecars share its network namespace), so the tunnel is the only way a request reaches one.
+
+A PORT PER AUDIENCE, and the split is the boundary:
+  :7490 `public`  preview hostnames, through the front door. Every request needs the viewer cookie
+                  a one-time ticket mints; the control plane issues those tickets to people who can
+                  read the run.
+  :7491 `tunnel`  `/tunnel/<ticket>` for runners, and nothing else. Never routed; the NetworkPolicy
+                  admits run pods alone. Whatever a run does to it costs other runs' dials at worst.
+  :7493 `api`     `/internal/*` for the control plane (RYPH_PREVIEWS_TOKEN). Never routed; the
+                  NetworkPolicy admits the control plane (and, with several replicas, the other
+                  previews pods), never a run.
+  :7492 `peer`    with several replicas only: browser requests another previews pod relays. The
+                  NetworkPolicy admits the other previews pods alone.
+
+ONE DEPLOYMENT PER ORDINAL, `previews.replicas` of them, EACH RUN ON ONE POD. The state — which
+previews exist, their pending tickets, the open tunnels — is in memory, so every preview of a run
+lives on one pod, its owner, picked by rendezvous hashing of the run's shard over the ordinals
+0..N-1. Any pod tells the owner without asking anyone: a preview id starts with its run's shard, and
+the control plane's calls name the run or the preview. Each ordinal is its own one-pod Deployment
+(`previews-<k>`, RYPH_PREVIEWS_ORDINAL=k) with its own ClusterIP Service (`previews-<k>`): a stable
+address for its peers and for runners, with no DNS answer to go stale when the pod moves. The shared
+`previews` Service fronts them all for the control plane, the front door and runners' first dial. A
+pod that gets something another owns sends it there — the control plane's calls to that pod's API
+port :7493 (with a credential derived from the token in place of the bearer), a browser's request
+to its PEER port :7492 (only a viewer's, its cookie checked here first, or the way in with a ticket
+whose MAC this pod checked) — and the owner never forwards it again. A runner is not forwarded at
+all: the owner's registration answer names `ws://previews-<k>.<ns>.svc:7491`, and the runner dials
+that; the control plane takes no other address (RYPH_PREVIEWS_PEER_HOST, set on it too).
+
+With one replica it is the single Deployment `previews` it always was, under the same name and
+selector, so an install that never sets `previews.replicas` upgrades in place: no per-ordinal
+Service, no peer port, nothing forwarded.
+
+RECREATE, EACH ORDINAL ON ITS OWN. A rollout replaces a pod by stopping it first, so an ordinal is
+never served by two pods it rolled out; but an eviction is not a rollout: a pod on a hung node is
+Terminating (and until the node object goes, may look ready) while its replacement already runs.
+Its Service therefore publishes only ready addresses: the replacement's, once it is ready, never the
+dead pod's alongside it. A hung node costs an ordinal the chart's `nodeFailureTolerationSeconds`
+(the pod is evicted and a replacement scheduled, as for every one-replica Deployment here). A pod's
+restart costs its runs a gap: runners reconnect with backoff and re-register, and an id is an HMAC of
+the run and the port, so every link and viewer cookie survives it. A single pod's disruption (a
+drain, an eviction) leaves the other ordinals serving their runs. A `helm upgrade` that changes the
+pods (an image, an env) replaces EVERY ordinal at once, each its own Recreate, so every preview
+reconnects. So does changing N, which changes every pod's RYPH_PREVIEWS_REPLICAS: while pods disagree
+on N each serves only what it owns under its own view and refuses (503) a forwarded request it does
+not own. Going from 1 to N, the old `previews` pod and the new ordinals share the `previews` Service
+for a moment, and requests that reach the old pod for a run it no longer owns fail until it is gone;
+it heals by itself (the chart's README, on changing `previews.replicas`, has both directions).
+
+No failover: a pod that is down takes its runs' previews with it until it is back and their runners
+have re-registered. Caps are per pod (256 previews, 768 streams, and the memory limit, which each pod
+measures itself against and sheds near). The counts are constants: more memory than about 1 GiB only
+moves a pod's watermarks, and more capacity is more replicas. Several replicas are EXPERIMENTAL (not
+run in any cell yet; the README's "Several previews replicas" says what to check first), and are for
+when one pod's counts are not enough, or to keep one pod's failure to a share of the runs; they do
+not make any run's previews more available.
+
+The preview domain must be a registrable domain the app is NOT on, so a page an agent wrote cannot
+read or ride the app's cookies.
+*/ -}}
+{{- if .Values.previews.enabled }}
+{{- $v := .Values.previews -}}
+{{- if not $v.domain }}{{ fail "previews.domain is required when previews.enabled" }}{{ end -}}
+{{- $previewSite := include "ryph.registrableDomain" $v.domain -}}
+{{- range $appUrl := compact (list $.Values.appUrl $v.appUrl) }}
+{{- $appSite := include "ryph.registrableDomain" (urlParse $appUrl).hostname -}}
+{{- if eq $previewSite $appSite }}
+{{- fail (printf "previews.domain (%s) is on the app's registrable domain (%s, from %s): a page an agent wrote there could set cookies the app reads, and is same-site to it. Put previews on a domain of their own" $v.domain $appSite $appUrl) }}
+{{- end }}
+{{- end }}
+{{- $env := include "ryph.previews.env" . | fromYamlArray -}}
+{{- $replicas := int ($v.replicas | default 1) -}}
+{{- range $k := until $replicas }}
+{{- $several := gt $replicas 1 }}
+{{- $name := ternary (printf "previews-%d" $k) "previews" $several }}
+{{- $podEnv := $env }}
+{{- if $several }}
+{{- $podEnv = append $env (dict "name" "RYPH_PREVIEWS_ORDINAL" "value" (toString $k)) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "ryph.ns.services" $ }}
+  labels:
+    {{- include "ryph.labels" (list $ "previews") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: previews
+      {{- if $several }}
+      ryph.dev/previews-ordinal: {{ $k | toString | quote }}
+      {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "previews" | nindent 8 }}
+        {{- if $several }}
+        ryph.dev/previews-ordinal: {{ $k | toString | quote }}
+        {{- end }}
+      {{- with (include "ryph.podAnnotations" (list $ $v (include "ryph.secretChecksum" (list $ "previews"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The pre-stop pause (5s) plus the drain deadline (25s), with a margin. Draining closes the
+      # tunnels and every upgraded socket, so each runner hears it at once and starts reconnecting.
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" $ | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list $ $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- if $several }}
+      # Ordinals in different zones and on different nodes where the cluster has them: a zone or a
+      # node that goes takes one ordinal's runs with it, not several.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: previews
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: previews
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+        {{- if $v.capSocketBuffers }}
+        # The kernel's buffers of every TCP socket the pod holds count against its memory limit
+        # (cgroup v2), and left to autotuning each can grow to some 4 MiB sent and 6 MiB received:
+        # a page that opens many requests and never reads would pin tens of MiB a stream, faster
+        # than the pod's memory guard samples. Capped at 128 KiB each way, two of the tunnel's
+        # 64 KiB frames: a stream keeps one in flight, so more buys it nothing. Both are namespaced
+        # and on the kubelet's safe list since Kubernetes 1.32 (kernel 4.15 or newer), so the
+        # restricted Pod Security level admits them; on an older cluster the pod is refused
+        # (SysctlForbidden), and `previews.capSocketBuffers: false` leaves them to the kernel.
+        sysctls:
+          - name: net.ipv4.tcp_rmem
+            value: "4096 32768 131072"
+          - name: net.ipv4.tcp_wmem
+            value: "4096 16384 131072"
+        {{- end }}
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      containers:
+        - name: previews
+          image: {{ include "ryph.image" (list $ $.Values.images.previews) }}
+          {{- with $.Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: public
+              containerPort: 7490
+            - name: tunnel
+              containerPort: 7491
+            {{- if $several }}
+            - name: peer
+              containerPort: 7492
+            {{- end }}
+            - name: api
+              containerPort: 7493
+          env:
+            {{- include "ryph.env" (list $podEnv $v.extraEnv) | nindent 12 }}
+          # RYPH_PREVIEWS_TOKEN: the control plane's bearer on the API port, and the HMAC key for
+          # preview ids and viewer cookies. The only credential this pod holds.
+          envFrom:
+            - secretRef:
+                name: {{ include "ryph.secretName" (list $ "previews") }}
+          # On the PUBLIC port, by the pod's address (a Host under the preview domain is a browser's,
+          # never answered here). Never failing for memory: a load balancer whose every backend is
+          # unhealthy answers 503 for everything.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: public
+            periodSeconds: 5
+          # Fails while the pod's memory guard says it cannot get back under its watermarks by itself
+          # (at least a minute at critical, and the latest shed found nothing to close): three
+          # failures 10 s apart, so the pod restarts some 30 s after it is stuck. A restart drops
+          # what it holds, and its runners re-register. 5 s to answer, not the default 1: past high a
+          # full collection runs every 10 s, and three slow answers in a row would restart a healthy
+          # pod.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: public
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # A proxy and nothing else: bytes go through, nothing is converted or kept.
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+{{- if $several }}
+# This ordinal's own address, for its peers and for the runners whose runs it owns: a virtual IP
+# that stays when the pod moves. Ready addresses only: an evicted pod on a dead node can linger as
+# an endpoint beside its replacement until the node is deleted, minutes, and would take half the
+# dials meanwhile. A draining owner stops being ready as it stops serving: its runners and peers
+# then wait for its replacement, which is what they would get from it anyway.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "ryph.ns.services" $ }}
+  labels:
+    {{- include "ryph.labels" (list $ "previews") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: previews
+    ryph.dev/previews-ordinal: {{ $k | toString | quote }}
+  ports:
+    - name: tunnel
+      port: 7491
+      targetPort: tunnel
+    - name: peer
+      port: 7492
+      targetPort: peer
+    - name: api
+      port: 7493
+      targetPort: api
+---
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: previews
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "previews") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: previews
+  ports:
+    - name: public
+      port: 7490
+      targetPort: public
+    - name: tunnel
+      port: 7491
+      targetPort: tunnel
+    - name: api
+      port: 7493
+      targetPort: api
+---
+{{- if gt $replicas 1 }}
+# Voluntary disruptions — a node drain, a consolidation — take one ordinal at a time, across all of
+# them: each pod's runs are down from its eviction until its replacement is up and their runners
+# have re-registered, and two at once would double that. Not one budget per ordinal: a one-pod
+# Deployment's own budget either blocks every drain (minAvailable 1) or allows anything. With one
+# replica there is nothing to keep apart, and no budget. A pod that is not ready (crash-looping,
+# pending an image) may always be evicted: it serves nothing, and counting it would block every
+# drain of every node holding another ordinal until it recovered.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: previews
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: previews
+---
+{{- end }}
+# INGRESS: the API port to the control plane, the tunnel port to run pods, and nothing on the public
+# port here (that is the front door's, below). Not the app — a viewer reaches a preview through the
+# control plane's `open` route and then the public hostname, never these ports. A run reaches :7491
+# on every previews pod, whichever Service it dials (the shared one, or with several replicas its
+# run's owner's own), and never the API port: a flood of connections from runs cannot reach the
+# control plane's calls. With several replicas, the peer and API ports to the other previews pods
+# too; a run never reaches either.
+#
+# EGRESS: with one replica, none. Every connection the pod holds was opened TO it — the browser's,
+# the control plane's, the runner's tunnel — and replies ride those. With several, its peers on the
+# peer and API ports (through their Services: a policy sees the pod behind the address), and the
+# cluster's resolver to find those by name (`ryph.netpol.dns`: a port-53 rule that names its
+# destination). Nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: previews
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: previews
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+      ports:
+        - port: 7493
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ryph.ns.runs" . }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: agent-run
+      ports:
+        - port: 7491
+    {{- if gt $replicas 1 }}
+    # Another previews pod: a browser request it relays (:7492), a call it forwards (:7493).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: previews
+      ports:
+        - port: 7492
+        - port: 7493
+    {{- end }}
+    {{- with (get .Values.networkPolicy.extraIngress "previews") }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if gt $replicas 1 }}
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: previews
+      ports:
+        - port: 7492
+        - port: 7493
+  {{- end }}
+---
+# The run's half of the tunnel. A policy of its own rather than a rule in `agent-run-egress`: egress
+# rules are additive across policies selecting the same pod, so this opens exactly one more
+# destination. Port 7491 only — a run never reaches the public, API or peer port. A check pod
+# (`check-run`) carries another label and gets nothing from this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-run-to-previews
+  namespace: {{ include "ryph.ns.runs" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: agent-run
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ryph.ns.services" . }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: previews
+      ports:
+        - port: 7491
+{{- with .Values.networkPolicy.frontDoor.from }}
+---
+# The public port's way in: whatever fronts the cluster (`networkPolicy.frontDoor.from`), on :7490
+# and nothing else. Without it the public port admits nothing, which fails closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: previews-from-load-balancer
+  namespace: {{ include "ryph.ns.services" $ }}
+  labels:
+    {{- include "ryph.labels.plain" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: previews
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: 7490
+{{- end }}
+{{- end }}
+
+{{- define "ryph.previews.env" -}}
+{{- $replicas := int (.Values.previews.replicas | default 1) -}}
+- name: RYPH_PREVIEWS_PORT
+  value: "7490"
+- name: RYPH_PREVIEWS_TUNNEL_PORT
+  value: "7491"
+- name: RYPH_PREVIEWS_API_PORT
+  value: "7493"
+# How many ordinals there are, each its own Deployment: which pod owns a run depends on it. Each
+# pod's own ordinal (RYPH_PREVIEWS_ORDINAL) is added by its Deployment.
+- name: RYPH_PREVIEWS_REPLICAS
+  value: {{ $replicas | toString | quote }}
+{{- if gt $replicas 1 }}
+# Every pod by ordinal, through its own Service; runners dial their owner there too.
+- name: RYPH_PREVIEWS_PEER_HOST
+  value: {{ include "ryph.previews.peerHost" . | quote }}
+- name: RYPH_PREVIEWS_PEER_PORT
+  value: "7492"
+{{- end }}
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+# The domain the service mints its URLs under. Never defaulted: a wrong domain mints links to
+# somebody else's hostnames.
+- name: RYPH_PREVIEWS_DOMAIN
+  value: {{ .Values.previews.domain | quote }}
+{{- with .Values.previews.publicPort }}
+# The port a browser reaches previews on when it is not the scheme's default. It must be the one in
+# the URL or the service refuses the Host.
+- name: RYPH_PREVIEWS_PUBLIC_PORT
+  value: {{ . | toString | quote }}
+{{- end }}
+# Where a link opened without the viewer cookie goes for a ticket: the app's origin.
+- name: RYPH_PREVIEWS_APP_URL
+  value: {{ .Values.previews.appUrl | default .Values.appUrl | quote }}
+{{- end -}}
+
+
+{{/* Every previews ordinal's own Service, `{ordinal}` in it: the previews pods reach each other
+there, and the control plane takes no other address for a runner to dial. */}}
+{{- define "ryph.previews.peerHost" -}}
+{{ printf "previews-{ordinal}.%s.svc" (include "ryph.ns.services" .) }}
+{{- end -}}

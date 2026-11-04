@@ -1,0 +1,62 @@
+{{- /*
+Five namespaces, and the splits are the point. The services live in the services namespace; every
+run's Job, pod and Secret lands in the runs namespace, where the control plane may create and delete
+and nothing else of ours runs; every hosted MCP server — a VENDOR's container — lands in the tools
+namespace, where the mcp-gateway may, and nothing else of ours runs either; the egress proxy lives
+alone in the egress namespace; and every environment build — a repo's Dockerfile and its setup.yml,
+executed — lands in the builds namespace. A NetworkPolicy, an RBAC grant or a quota can then say
+"runs", "tools", "egress" or "builds" without naming a pod.
+
+The outer namespaces never meet. A run reaches its tools by dialling the gateway's data listener in
+the services namespace and spending a virtual token; it has no route to the tools namespace at all,
+and the NetworkPolicies deny it from both ends. It reaches the internet by dialling the proxy in the
+egress namespace and spending a signed allowlist, and it has no other route out at all.
+
+Pod Security: the services meet `restricted`, so it is enforced. So does every pod the gateway
+launches into the tools namespace, whatever the vendor image would have preferred — it is given a
+numeric uid rather than asked for one, which is the part a kubelet can actually verify.
+
+The runs namespace enforces `baseline`, which refuses privileged pods, host namespaces and hostPath
+outright, and only warns on `restricted`. The run's own container does meet `restricted`: the
+provisioner pins runAsNonRoot, runAsUser and runAsGroup on it by number (RYPH_K8S_RUN_USER), so an
+operator who points the agent image at one with no USER still cannot run model-authored shell as
+uid 0. What keeps the NAMESPACE at baseline is the rest of the pod: a task's service containers are
+vendor images — a database, a cache — which start as root and take CHOWN/SETUID/SETGID to drop to
+their own user, and `restricted` would refuse every one of them.
+*/ -}}
+{{- include "ryph.ns.validate" . }}
+{{- if .Values.namespaces.create }}
+---
+# What a shared Gateway can select to let a namespace attach a route: this namespace and no other.
+# The runs, tools and egress namespaces deliberately do not carry it — a run's namespace must not be
+# able to put itself on the public door.
+{{- include "ryph.namespace" (list . "services" (dict "ryph.dev/services" "true" "pod-security.kubernetes.io/enforce" "restricted")) }}
+---
+{{- include "ryph.namespace" (list . "runs" (dict "pod-security.kubernetes.io/enforce" "baseline" "pod-security.kubernetes.io/warn" "restricted" "pod-security.kubernetes.io/audit" "restricted")) }}
+---
+# Where hosted MCP servers run. Nothing of ours runs here: the gateway launches a Deployment and a
+# Service per hosted server, plus the tool guard, and holds a Role that reaches no further.
+# `restricted` is enforced because everything in here is somebody else's code.
+{{- include "ryph.namespace" (list . "tools" (dict "pod-security.kubernetes.io/enforce" "restricted")) }}
+---
+# Where the egress proxy runs, alone. It is the one process in the deployment whose job is to reach
+# the open internet, so it is the one that must be reachable from nothing of ours but a run and able
+# to reach nothing of ours at all — which is a sentence a namespace can enforce and a pod label
+# cannot. `restricted` is enforced: it is our own build, non-root, read-only rooted.
+{{- include "ryph.namespace" (list . "egress" (dict "pod-security.kubernetes.io/enforce" "restricted")) }}
+---
+# Where environment builds run: one Job per build, rootless BuildKit executing a repo's Dockerfile
+# and its setup.yml, which is to say untrusted code with a registry push credential beside it.
+# Nothing else of ours runs here; the control plane may create and delete, the pods reach the
+# egress proxy and the forge's git gateway and nothing else, and a quota bounds how many there are.
+#
+# `privileged` is ENFORCED, and this is the one namespace where it is: rootless BuildKit builds its
+# user namespace with rootlesskit, which needs the seccomp and AppArmor profiles unconfined — both
+# of which `baseline` refuses. What the level does not buy is everything else: the builder never
+# runs as root, never adds a capability, never mounts a host path, and only the control plane can
+# create a pod here at all. The boundary is the sandbox runtime class every build pod gets
+# (`environments.runtimeClassName`, else `runs.runtimeClassName`), exactly as it is for a run; the
+# chart refuses to render builds without one unless `environments.allowUnsandboxed` (builds.yaml).
+# `baseline` is still audited and warned on, so anything that asks for more is visible.
+{{- include "ryph.namespace" (list . "builds" (dict "pod-security.kubernetes.io/enforce" "privileged" "pod-security.kubernetes.io/warn" "baseline" "pod-security.kubernetes.io/audit" "baseline")) }}
+{{- end }}

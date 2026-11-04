@@ -1,0 +1,884 @@
+# Values for the ryph chart. Every key is documented here; README.md explains the model behind them.
+#
+# A release is one complete ryph deployment: the services and five namespaces of its own, six with
+# `devState` (see `namespaces`). Two releases on one cluster need different namespaces and exactly one of them
+# owning the shared PriorityClasses (`priorityClasses.create`).
+
+# -- The app's public origin, as a browser types it (no trailing slash). The app's ORIGIN, the
+# control plane's RYPH_APP_URL, and where a preview link without a cookie is sent for a ticket.
+appUrl: http://localhost:3000
+
+# ── images ─────────────────────────────────────────────────────────────────────────────────────
+
+image:
+  # -- Registry every ryph image is pulled from, unless an entry under `images` names its own.
+  # Empty means no registry prefix at all (`ryph-control-plane:dev`), for images loaded straight
+  # into a laptop cluster's store (`kind load docker-image`).
+  registry: quay.io/ryph
+  # -- Tag for every ryph image without a tag of its own. Empty means the chart's appVersion.
+  tag: ""
+  # -- imagePullPolicy for every service container. Empty: Kubernetes' default (IfNotPresent for
+  # a tag, Always for `latest`).
+  pullPolicy: ""
+  # -- Image pull secrets, by name, for the service pods. Runs, builds and hosted MCP servers are
+  # launched by the services and do not use these.
+  pullSecrets: []
+
+# Each image: `repository` (the name under the registry), and optionally its own `registry`, `tag`
+# and `digest` (`sha256:…`). With a digest the reference is `<registry>/<repository>:<tag>@<digest>`,
+# which pins the bytes while keeping the tag readable.
+images:
+  controlPlane: { repository: ryph-control-plane, registry: "", tag: "", digest: "" }
+  app: { repository: ryph-app, registry: "", tag: "", digest: "" }
+  historian: { repository: ryph-historian, registry: "", tag: "", digest: "" }
+  memory: { repository: ryph-memory, registry: "", tag: "", digest: "" }
+  chat: { repository: ryph-chat, registry: "", tag: "", digest: "" }
+  web: { repository: ryph-web, registry: "", tag: "", digest: "" }
+  modelProxy: { repository: ryph-model-proxy, registry: "", tag: "", digest: "" }
+  mcpGateway: { repository: ryph-mcp-gateway, registry: "", tag: "", digest: "" }
+  forge: { repository: ryph-forge, registry: "", tag: "", digest: "" }
+  automations: { repository: ryph-automations, registry: "", tag: "", digest: "" }
+  egressProxy: { repository: ryph-egress-proxy, registry: "", tag: "", digest: "" }
+  previews: { repository: ryph-previews, registry: "", tag: "", digest: "" }
+  radicle: { repository: ryph-radicle, registry: "", tag: "", digest: "" }
+  radicleNode: { repository: ryph-radicle-node, registry: "", tag: "", digest: "" }
+  # -- The browser image. The artifact thumbnail renderer runs it, and a browser agent's run gets
+  # it as a sidecar (`runs.browserSidecar`).
+  browser: { repository: ryph-browser, registry: "", tag: "", digest: "" }
+  # Images the services HAND to the pods they launch, as env values, rather than run themselves.
+  # Pin them by digest in production: the control plane compares the harness and base digests on
+  # boot to decide what to re-layer and rebuild, and a tag can be re-pushed.
+  # -- Every run's image (RYPH_AGENT_IMAGE): the universal environment plus the harness layer.
+  agent: { repository: ryph-agent, registry: "", tag: "", digest: "" }
+  # -- The harness layer an environment build copies on last (RYPH_HARNESS_IMAGE). Environments only.
+  harness: { repository: ryph-harness, registry: "", tag: "", digest: "" }
+  # -- The universal base image environment builds start from (RYPH_ENV_BASE_IMAGE). Environments only.
+  universal: { repository: ryph-universal, registry: "", tag: "", digest: "" }
+  # -- The tool guard the mcp-gateway launches into the tools namespace (RYPH_TOOL_GUARD_IMAGE).
+  toolGuard: { repository: ryph-tool-guard, registry: "", tag: "", digest: "" }
+
+# ── namespaces ─────────────────────────────────────────────────────────────────────────────────
+
+# Five namespaces, six with `devState`, and the splits are the point (README.md, "The namespace
+# model"): services, runs, hosted MCP servers, environment builds and the egress proxy each get
+# one (and the dev Postgres and object store one more), so a NetworkPolicy, an RBAC grant or a
+# quota can say "runs" without naming a pod. Every
+# cross-namespace reference in the chart (URLs, namespace selectors, RoleBinding subjects, the
+# namespaces the services launch into) follows these values.
+#
+# Install the release itself into a namespace none of these is (`-n ryph-system`, say), whether
+# or not the chart creates them: Helm keeps its release records there, and they hold every Secret
+# the chart renders. The chart refuses a release namespace it uses.
+namespaces:
+  # -- Create the Namespace objects, with their Pod Security labels. With `false`, create them
+  # yourself first, with the labels listed in README.md ("Pre-created namespaces").
+  create: true
+  # -- Keep every Namespace the chart creates when the release is uninstalled, rolled back from a
+  # failed first install (`--rollback-on-failure`, `--atomic`), or upgraded to values that no longer
+  # render one. Deleting a namespace deletes everything in it: in-flight runs and their Secrets,
+  # hosted MCP servers, build volumes, the egress proxy's key — and in the services namespace the
+  # Secrets YOU created there (existingSecret, postgres.urlSecrets, …) and the Radicle volume. False
+  # lets Helm delete them all.
+  keepOnUninstall: true
+  # -- Every name below defaults to `<prefix>` or `<prefix>-<suffix>`. Two releases on one cluster
+  # need two prefixes.
+  prefix: ryph
+  # -- The services. Default `<prefix>`.
+  services: ""
+  # -- Agent runs and check suites. Default `<prefix>-runs`.
+  runs: ""
+  # -- Hosted MCP servers and the tool guard. Default `<prefix>-tools`.
+  tools: ""
+  # -- Environment builds. Default `<prefix>-builds`.
+  builds: ""
+  # -- The egress proxy, alone. Default `<prefix>-egress`.
+  egress: ""
+  # -- The bundled dev Postgres and object store (`devState`). Default `<prefix>-state`.
+  state: ""
+  # -- Extra labels on every Namespace the chart creates. `ryph.dev/services` and every
+  # `pod-security.kubernetes.io/` key are refused: the chart sets the Pod Security levels itself,
+  # and a `*-version` key would pin them to an older, weaker definition.
+  labels: {}
+
+# ── cluster-scoped objects ─────────────────────────────────────────────────────────────────────
+
+# Reserved capacity's PriorityClasses (README.md, "Cluster-scoped objects"): ten placeholder rungs
+# `ryph-reserved-capacity-0` … `-9` at -10 … -1, `ryph-workload` (what every run, check and build
+# names) and `ryph-tool-host` (hosted MCP servers). The services name them literally, so every
+# release on a cluster shares the same ones.
+priorityClasses:
+  # -- Create them. Exactly ONE release per cluster sets this; every other sets false and uses
+  # the same objects.
+  create: true
+  # -- Keep them when the owning release is uninstalled, so another release's pods are not
+  # refused admission for naming a class that disappeared.
+  keepOnUninstall: true
+  # -- ryph-workload's value, 0 or more. 0 is what a pod gets on a cluster with no `globalDefault`
+  # class. On a cluster WITH one, set both of these to its value; it must be 0 or more, since the
+  # rungs are fixed at -10 … -1 and real work must outrank them. Immutable once created: changing
+  # it is a delete and an upgrade (the chart says how when it sees the change).
+  workloadValue: 0
+  # -- ryph-tool-host's value. Level with ryph-workload, and it preempts nothing.
+  toolHostValue: 0
+
+# ── secrets ────────────────────────────────────────────────────────────────────────────────────
+
+# Every service reads its secrets from a Secret named after itself, through envFrom
+# (README.md, "The Secret contract", lists every key). For each one you can:
+#   - point at a Secret you manage (`<service>.existingSecret`); the chart creates none for it, or
+#   - let the chart create it, from the values below, from generated internal credentials, and
+#     from what the cluster already holds (`lookup`), so a credential stays the same across
+#     upgrades and every service that shares one gets the same value.
+secrets:
+  # -- Generate a missing internal credential (a random 64-hex-character value), where the chart
+  # can tell it is new: on an install it renders with cluster access. It refuses, naming the
+  # credential, when the render cannot see the cluster (`helm template`, Argo CD, `--dry-run`), and
+  # for the three sealing keys on an upgrade or over a deployment that already runs (README.md,
+  # "Secrets"). False makes every missing credential a render error.
+  generate: true
+  # -- Mint a missing credential even where the chart cannot tell it is new — sealing keys included.
+  # DESTROYS DATA when the deployment already has keys: everything sealed with the old ones
+  # (provider keys, MCP credentials, chat bot tokens) becomes unreadable. Only for a throwaway
+  # render or a deployment with nothing sealed.
+  allowNewSealingKeys: false
+  # -- Keep chart-created Secrets when the release is uninstalled. They hold the keys that seal
+  # provider credentials, MCP credentials and chat bot tokens: a reinstall that minted new ones
+  # could not read anything the old deployment stored. A reinstall under the same release name
+  # adopts them. (The namespaces holding them are kept by `namespaces.keepOnUninstall`.)
+  keepOnUninstall: true
+  # -- Let the services boot with the public placeholder secrets committed to this repository.
+  # Adds RYPH_ALLOW_DEV_SECRETS=1 to every chart-created Secret. Laptop clusters only: refused
+  # without `devState.enabled`.
+  allowDevSecrets: false
+  # -- Internal credentials, shared between the services named in README.md. Empty means taken
+  # from the cluster if a Secret already holds it, else generated. Set them to bring your own (from
+  # a sealed values file, say), which is also how you render without `lookup`.
+  internal:
+    RYPH_FORGE_TOKEN: ""
+    RYPH_HISTORY_TOKEN: ""
+    RYPH_MODEL_PROXY_TOKEN: ""
+    RYPH_MCP_GATEWAY_TOKEN: ""
+    RYPH_AUTOMATIONS_TOKEN: ""
+    RYPH_MEMORY_TOKEN: ""
+    RYPH_CHAT_TOKEN: ""
+    RYPH_PLATFORM_TOKEN: ""
+    RYPH_MEMORY_GATEWAY_TOKEN: ""
+    RYPH_CHAT_GATEWAY_TOKEN: ""
+    RYPH_WEB_GATEWAY_TOKEN: ""
+    RYPH_FORGE_GATEWAY_TOKEN: ""
+    # The key that signs a run's egress claim (control plane) and verifies it (egress proxy).
+    RYPH_EGRESS_KEY: ""
+    # What the app sends with a client address, and the control plane checks.
+    RYPH_PROXY_SECRET: ""
+    # Encryption keys, each held by one service: provider keys (model-proxy), MCP credentials
+    # (mcp-gateway), chat bot tokens (chat). Losing one loses what it sealed.
+    RYPH_SECRETS_KEY: ""
+    RYPH_MCP_KEY: ""
+    RYPH_CHAT_KEY: ""
+    # The previews service's one credential (previews.enabled).
+    RYPH_PREVIEWS_TOKEN: ""
+    # The forge ⇄ Radicle bridge bearer (radicle.enabled).
+    RYPH_RADICLE_TOKEN: ""
+
+# ── external state ─────────────────────────────────────────────────────────────────────────────
+
+# Postgres. Every service owns a database of its own on one server; the chart builds each one's
+# URL from these parts, unless `urls` or `urlSecrets` gives it whole.
+postgres:
+  # -- Server address. Empty with `devState.enabled` means the bundled one.
+  host: ""
+  port: 5432
+  user: ""
+  # -- Password, URL-encoded into every URL the chart builds. Prefer `urlSecrets` or each
+  # service's `existingSecret` in production.
+  password: ""
+  # -- Query string appended to every built URL, e.g. `sslmode=require&max=2&idle_timeout=30`
+  # (`max` and `idle_timeout` size each service's pool).
+  params: ""
+  # -- Database name per owner.
+  databases:
+    controlPlane: ryph
+    historian: ryph_history
+    modelProxy: ryph_keys
+    mcpGateway: ryph_mcp
+    memory: ryph_memory
+    chat: ryph_chat
+    forge: ryph_forge
+    automations: ryph_automations
+    radicle: ryph_radicle
+  # -- A whole URL per owner (same keys as `databases`), put into that service's Secret.
+  urls: {}
+  # -- A key in a Secret you manage holding the whole URL, per owner (same keys as `databases`):
+  # `{name: …, key: …}`. Wired as the variable's own env entry, which wins over envFrom; the
+  # service's Secret then does not carry it.
+  urlSecrets: {}
+
+# S3-compatible object storage: patch bundles (the forge), build logs and run images (the control
+# plane), all in one bucket. The bucket must exist: nothing here creates it.
+objectStore:
+  # -- Endpoint URL. Empty with `devState.enabled` means the bundled store.
+  endpoint: ""
+  bucket: ryph-patches
+  region: us-east-1
+  # -- Path-style addressing (`<endpoint>/<bucket>/<key>`). Rendered as a string.
+  forcePathStyle: true
+  # -- Key prefix inside the bucket (RYPH_S3_PREFIX), for releases sharing one bucket.
+  prefix: ""
+  # -- Static credentials, put into the control plane's and the forge's Secrets. Both services
+  # refuse to boot without them; leave these empty only when `existingSecret` holds them (or each
+  # service's own existingSecret does). A workload identity does not stand in: on GCS, HMAC keys.
+  accessKeyId: ""
+  secretAccessKey: ""
+  # -- A Secret you manage holding RYPH_S3_ACCESS_KEY_ID and RYPH_S3_SECRET_ACCESS_KEY.
+  existingSecret: ""
+
+# ── the network boundary ───────────────────────────────────────────────────────────────────────
+
+# The NetworkPolicies are the security boundary and are always rendered; these knobs only add
+# what a cluster knows and the chart cannot. Each names the rules it touches by what they ARE,
+# never by position. README.md, "The network boundary", explains the policies.
+networkPolicy:
+  dns:
+    # -- Where the cluster's DNS pods are. Every DNS rule names its destination rather than
+    # opening port 53 to everything.
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+    # -- Extra resolver addresses every DNS rule may reach on port 53, e.g. a NodeLocal DNSCache
+    # (`169.254.20.10/32`). Link-local and private ranges are otherwise excepted everywhere.
+    extraCidrs: []
+  internet:
+    # -- Public addresses to except from every internet rule (the egress proxy's, hosted MCP
+    # servers', memory's, chat's, web's, the model-proxy's and the Radicle node's): the
+    # Kubernetes API server's public endpoint, say. Private ranges are always excepted.
+    extraExcept: []
+  database:
+    # -- Addresses added to every database rule (memory, chat, model-proxy, radicle): your
+    # Postgres server outside the cluster, e.g. `10.20.0.3/32`. The services without an egress
+    # policy reach it without this.
+    extraCidrs: []
+    # -- Ports added to every database rule beside 5432 and `postgres.port`.
+    extraPorts: []
+    # -- NetworkPolicy peers added to every database rule, for a Postgres INSIDE the cluster that
+    # an operator runs (CloudNativePG, Crunchy, Zalando): `namespaceSelector` and/or `podSelector`,
+    # e.g. `[{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: databases}},
+    # podSelector: {matchLabels: {cnpg.io/cluster: ryph}}}]`. A peer whose every selector is empty
+    # (every pod) is refused.
+    peers: []
+  frontDoor:
+    # -- Who fronts the cluster, as NetworkPolicy peers (`ipBlock`, `namespaceSelector`…): your
+    # load balancer's ranges or your ingress controller's namespace. Used for the app's :3000,
+    # the forge's webhook intake and the automations hooks door (when the front door routes
+    # `/v1/hooks/`), and the previews public port. Empty: the app's :3000 is open to every source
+    # (the base posture), and the other three admit nothing from outside the cluster.
+    from: []
+  # -- Extra rules appended to a policy's ingress list, keyed by policy name: control-plane,
+  # historian, memory, chat, web, forge, automations, model-proxy, mcp-gateway, app, egress-proxy,
+  # previews, radicle. Rules are additive: this can only open more. Any other key is an error, and
+  # so is a rule without a non-empty `from` (which would admit every source), or a peer without an
+  # `ipBlock` whose every selector is empty: `namespaceSelector: {}` is every pod in every
+  # namespace, and a lone `podSelector: {}` every pod in the policy's own namespace (the runs, for
+  # a run policy). Name same-namespace peers by their labels.
+  extraIngress: {}
+  # -- Extra rules appended to a policy's egress list, keyed by policy name: memory, chat, web,
+  # model-proxy, agent-run-egress, check-run-egress, environment-build-egress, egress-proxy,
+  # tool-server, radicle. Any other key is an error, and so is a rule without a non-empty `to`, or
+  # a peer that is every pod (as for `extraIngress`).
+  extraEgress: {}
+
+# ── schema migrations ──────────────────────────────────────────────────────────────────────────
+
+# Each service with a database runs its owner's migrations in an init container before it starts,
+# holding a Postgres advisory lock on that database so replicas starting together take turns.
+# README.md, "Migrations", says why this and not Helm hooks.
+migrations:
+  # -- Run them. With false you apply every owner's migrations yourself before each upgrade.
+  enabled: true
+  # -- How long a migration waits for the lock another pod holds before its pod fails and is
+  # retried (RYPH_MIGRATE_LOCK_TIMEOUT). Raise it above your longest migration.
+  lockTimeoutSeconds: 600
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+# ── scheduling defaults ────────────────────────────────────────────────────────────────────────
+
+# -- How long a service pod stays on a node that stopped answering (not-ready/unreachable) before
+# it is evicted. Kubernetes' default is 300s; nearly everything here is one replica, so that would
+# be five minutes of downtime. Null drops the tolerations and keeps the cluster's default.
+nodeFailureTolerationSeconds: 30
+
+# Applied to every service pod, under each service's own settings.
+podDefaults:
+  nodeSelector: {}
+  # -- Appended to the node-failure tolerations above.
+  tolerations: []
+  affinity: {}
+  annotations: {}
+
+# ── what the control plane launches ────────────────────────────────────────────────────────────
+
+runs:
+  # -- RuntimeClass every run pod (and check pod) gets (RYPH_K8S_RUNTIME_CLASS): `gvisor`, say.
+  # Empty is the cluster's default runtime, i.e. no sandbox beyond the container.
+  runtimeClassName: ""
+  # -- StorageClass for a size class's work volume (RYPH_K8S_WORK_VOLUME_CLASS). Empty is the
+  # cluster's default class.
+  workVolumeStorageClass: ""
+  # -- Run a repo's `.ryph/services.yml` databases as sidecars in its run pod (RYPH_SERVICES).
+  services: false
+  # -- Size classes (RYPH_RUN_SIZES), picked per repo or workspace by an admin.
+  sizes: "standard:cpu=4,memory=8Gi,ephemeral-storage=10Gi;large-no-disk:cpu=7,memory=16Gi,ephemeral-storage=10Gi;large:cpu=7,memory=16Gi,ephemeral-storage=10Gi,work-volume=50Gi"
+  defaultSize: standard
+  # -- Give a browser agent's run the browser sidecar (RYPH_BROWSER_IMAGE = `images.browser`).
+  browserSidecar: true
+
+checks:
+  # -- A repo's `.ryph/checks.yml` is read and run in check pods of their own (RYPH_CHECKS).
+  enabled: false
+  # -- The size class a check pod gets (RYPH_CHECKS_SIZE). Empty: the repo's.
+  size: ""
+  # -- Comma-separated size classes (of `runs.sizes`) a `pod: own` check may name in its `size`
+  # (RYPH_CHECKS_OWN_SIZES); a class it does not define, or one listed twice, refuses the boot.
+  # Empty: none, and a check that names one fails.
+  ownSizes: ""
+  # -- A compute class the check pods ask for (RYPH_K8S_CHECK_COMPUTE_CLASS). GKE only.
+  computeClass: ""
+  # The rest of packages/orchestrator/docs/checks.md's knobs go through `controlPlane.extraEnv`
+  # (RYPH_CHECKS_CONCURRENCY, …). RYPH_CHECKS_CPUS and RYPH_CHECKS_MEMORY cap docker check
+  # containers and mean nothing here: a check pod's size is its size class. To send every suite to
+  # another instance instead, RYPH_CHECKS_REMOTE_URL in `controlPlane.extraEnv` and
+  # RYPH_CHECKS_REMOTE_TOKEN in `controlPlane.extraSecretData`.
+
+environments:
+  # -- Build a repo's `.ryph/Dockerfile` and `setup.yml` into its own image (RYPH_ENVIRONMENTS).
+  # Off, every run uses `images.agent`.
+  enabled: false
+  # -- Where builds run (RYPH_ENV_BUILDER): `kubernetes` (rootless BuildKit Jobs in the builds
+  # namespace) or `cloud-build`. Empty is the service's default (kubernetes).
+  #
+  # `cloud-build` builds on a Cloud Build private pool and takes its settings through
+  # `controlPlane.extraEnv`; the control plane refuses to start without all seven of:
+  # RYPH_ENV_CLOUD_BUILD_POOL (`projects/<p>/locations/<r>/workerPools/<pool>`),
+  # RYPH_ENV_CLOUD_BUILD_LOGS and RYPH_ENV_CLOUD_BUILD_BRANCH_LOGS (two log buckets),
+  # RYPH_ENV_CLOUD_BUILD_SERVICE_ACCOUNT and RYPH_ENV_CLOUD_BUILD_BRANCH_SERVICE_ACCOUNT (two
+  # identities), and — because a pool worker is outside the cluster and dials the egress proxy
+  # and the forge's git gateway at addresses it can reach (internal load balancers), not their
+  # cluster DNS names — RYPH_ENV_EGRESS_PROXY_URL and RYPH_ENV_GIT_GATEWAY_URL. It also refuses
+  # without a `branchRegistry` distinct from `registry`. Optional: RYPH_ENV_CLOUD_BUILD_DISK and
+  # RYPH_ENV_BUILDKIT_IMAGE (a rootful one) (packages/orchestrator/docs/environment-builders.md).
+  builder: ""
+  # -- RuntimeClass for in-cluster build pods (RYPH_ENV_BUILD_RUNTIME_CLASS). Empty: the runs'.
+  # The kubernetes builder needs one, here or in `runs.runtimeClassName`: the chart refuses to
+  # render without it (README.md, "Requirements", on installing gVisor).
+  runtimeClassName: ""
+  # -- Let the kubernetes builder run builds with no RuntimeClass (RYPH_ENV_BUILD_ALLOW_UNSANDBOXED).
+  # Do not, outside a laptop cluster. A build runs a branch's `.ryph/Dockerfile` and `setup.yml`,
+  # which an agent can write, under rootless BuildKit with seccomp and AppArmor unconfined (user
+  # namespaces need it). Without a sandboxing runtime that is the node's own kernel with its full
+  # syscall surface: one user-namespace kernel bug in a RUN step is root on the node, and with it
+  # every run's Secret and token scheduled there.
+  allowUnsandboxed: false
+  # -- Registry a default-branch build pushes to (RYPH_ENV_REGISTRY) and a branch build pushes to
+  # (RYPH_ENV_BRANCH_REGISTRY).
+  registry: ""
+  branchRegistry: ""
+  # -- Each build's size (RYPH_ENV_BUILD_SIZE), e.g. `cpu=4,memory=8Gi,ephemeral-storage=10Gi,work-volume=50Gi`.
+  buildSize: ""
+  # -- Builds at once (RYPH_ENV_BUILD_CONCURRENCY).
+  concurrency: ""
+  # -- A build's ceiling (RYPH_ENV_BUILD_TIMEOUT), e.g. `60m`.
+  timeout: ""
+  # -- The builds namespace's quota. Raise `requests.storage` with the concurrency or the work
+  # volume, or a retained volume leaves the next build Pending on the quota.
+  quota:
+    pods: "6"
+    requests.cpu: "24"
+    requests.memory: 48Gi
+    requests.ephemeral-storage: 60Gi
+    persistentvolumeclaims: "6"
+    requests.storage: 300Gi
+  # -- Annotations on the two builder ServiceAccounts (workload identity bindings, say).
+  builderServiceAccount:
+    annotations: {}
+  branchBuilderServiceAccount:
+    annotations: {}
+
+tools:
+  # -- RuntimeClass for every hosted MCP server the gateway launches (RYPH_TOOL_HOST_RUNTIME_CLASS).
+  # The tool guard is exempt.
+  runtimeClassName: ""
+
+# ── integrations ───────────────────────────────────────────────────────────────────────────────
+
+# A GitHub App, for the forge's GitHub doors and the app's install and link flows.
+github:
+  enabled: false
+  # -- The App's slug and client id, shown in the browser (PUBLIC_GITHUB_APP_NAME, PUBLIC_GITHUB_CLIENT_ID).
+  appName: ""
+  clientId: ""
+  # -- Put into the forge's Secret: RYPH_GITHUB_APP_ID, RYPH_GITHUB_CLIENT_SECRET,
+  # RYPH_GITHUB_WEBHOOK_SECRET (optional). With `forge.existingSecret`, put them there instead.
+  appId: ""
+  clientSecret: ""
+  webhookSecret: ""
+  # -- The App's private key, PEM. The chart creates Secret `forge-github-app` from it.
+  privateKey: ""
+  # -- Or a Secret you manage holding the PEM under the key `github-app.pem`.
+  privateKeySecret: ""
+
+# One GitLab instance (gitlab.com or self-managed), for the forge's GitLab doors and the app's
+# sign-in. ryph acts as a bot user added to projects at the Developer role (packages/forge,
+# README.md "GitLab").
+gitlab:
+  enabled: false
+  # -- The instance, with any path prefix (RYPH_GITLAB_URL; the app's PUBLIC_GITLAB_URL).
+  url: "https://gitlab.com"
+  # -- `bot` (a bot user's token, with webhooks and sign-in) or `user` (one person's token: no
+  # webhooks, merges polled; `webhookSecret`, `clientId`, `clientSecret` and `group` must be empty).
+  mode: bot
+  # -- The token ryph acts with (scopes api, read_repository, write_repository). Put into the
+  # forge's Secret as RYPH_GITLAB_TOKEN. With `forge.existingSecret`, put it there instead.
+  token: ""
+  # -- Or a Secret you manage holding the token under the key `token`.
+  tokenSecret: ""
+  # -- The master each project's webhook token is derived from (RYPH_GITLAB_WEBHOOK_SECRET). Bot
+  # mode only; empty takes no GitLab webhooks.
+  webhookSecret: ""
+  # -- A GitLab OAuth application (scope read_user, redirect URI `<appUrl>/gitlab/callback`) for
+  # sign-in and linking. The client id is also shown in the browser (PUBLIC_GITLAB_CLIENT_ID).
+  clientId: ""
+  clientSecret: ""
+  # -- A group path whose members may sign up (RYPH_GITLAB_GROUP). Empty: no group gate.
+  group: ""
+  # -- The instance's addresses, as CIDRs (`10.20.0.8/32`), when it is on a private network.
+  # memory's egress excepts every private range, so a repo-file ingest cannot reach a GitLab
+  # there without them; they open memory's egress to these addresses on `url`'s port alone. The
+  # forge is not held on the way out and needs nothing. Empty: a public instance.
+  egressCidrs: []
+  # -- A CA the instance's certificate chains to when the images do not trust it (self-signed, or
+  # an internal CA): a Secret you manage, in the services namespace, holding the PEM under `key`.
+  # The forge (API calls and git) and memory (repository files a memory cites) trust it beside the
+  # public CAs (README.md "GitLab with a private CA"). Empty: the public CAs alone.
+  caSecret:
+    name: ""
+    key: ca.crt
+
+# -- Agents may hold a forge policy (forge tools: issues, pull requests, patches through the
+# gateway). `auto` turns them on exactly when the forge has a GitHub App, GitLab or Radicle to
+# act through; `true`/`false` force it (`true` without any makes the forge refuse to start).
+forgeTools: auto
+
+# ── the services ───────────────────────────────────────────────────────────────────────────────
+
+# Every service accepts:
+#   replicas, resources, extraEnv (EnvVar list; a name the chart sets is replaced, a new one
+#   appended), nodeSelector, tolerations (appended), affinity, podAnnotations, and
+#   existingSecret (a Secret you manage, used instead of the one the chart would create).
+#   extraSecretData (map) adds keys to the chart-created Secret.
+
+controlPlane:
+  # Sign-in's rate limit is counted in each replica's memory, so N replicas allow N times the
+  # attempts until it moves to a shared store.
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  # -- The artifact sanitizer sidecar's resources: the supervisor and one sanitizer process.
+  sanitizerResources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  # -- Annotations on the control plane's ServiceAccount (a workload identity binding, say).
+  serviceAccount:
+    annotations: {}
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+app:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  # -- Where a client's address comes from behind a proxy: ADDRESS_HEADER and XFF_DEPTH
+  # (e.g. `x-forwarded-for` and `"2"` behind a load balancer that appends "<client>, <proxy>").
+  # Without it every visitor shares one address, and with it the sign-in rate limit, which one
+  # stranger's bad passwords can then spend for everyone.
+  addressHeader: ""
+  xffDepth: ""
+  # -- The ingestion door's origin as a SENDER reaches it, shown beside a webhook automation
+  # (PUBLIC_AUTOMATIONS_ORIGIN). Empty: `appUrl` when the front door routes `/v1/hooks/`, else
+  # http://localhost:7414 (a port-forward).
+  automationsOrigin: ""
+  # -- A bucket holding every build's static chunks, so a pod can answer for the other build's
+  # mid-rollout (RYPH_ASSET_FALLBACK_URL, RYPH_ASSET_BUCKET, RYPH_ASSET_REGION). Keys go into the
+  # app's Secret.
+  assetFallback:
+    url: ""
+    bucket: ""
+    region: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+historian:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+memory:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+chat:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+web:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+  # -- The search API key (RYPH_WEB_SEARCH_KEY). Empty: `web__fetch` only, no `web__search`.
+  searchKey: ""
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+modelProxy:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+mcpGateway:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  serviceAccount:
+    annotations: {}
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+forge:
+  # More than one needs `objectStore` (patches) — and still only one replica delivers webhooks:
+  # the one holding the mailroom's lock, so GitLab's call budget is the deployment's, not each
+  # replica's. Every replica takes deliveries at the door.
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+      ephemeral-storage: 5Gi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+automations:
+  # One replica, replaced rather than rolled: its registry and scheduler are per process.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+egressProxy:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  extraEnv: []
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# Untrusted HTML rendered to a thumbnail in a credential-free pod with no egress at all.
+artifactThumbnails:
+  enabled: true
+  # -- RYPH_THUMBNAIL_SANDBOX: Chromium's own sandbox, `required` or `off`. Keep `required`; `off`
+  # is refused without `runtimeClassName`, the outer sandbox that alone could justify it.
+  sandbox: required
+  # -- RuntimeClass for the renderer (`gvisor`, say). Chromium's sandbox still runs inside it.
+  runtimeClassName: ""
+  # -- The pod's seccomp profile. Chromium's sandbox needs user namespaces, which the container
+  # runtime's default profile refuses; under gVisor it works with the default. Without gVisor,
+  # install packages/host/src/thumbnail_seccomp.json on every node and set
+  # `{type: Localhost, localhostProfile: <path under the kubelet's seccomp dir>}`. Empty: RuntimeDefault,
+  # and without gVisor the renderer then refuses to start (its sandbox is required). `Unconfined`
+  # is not accepted.
+  seccompProfile: {}
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# Hosted previews: a browser opens a dev server an agent runs at `<id>.<domain>`.
+previews:
+  enabled: false
+  # -- The preview domain. A registrable domain the app is NOT on, so a page an agent wrote cannot
+  # ride the app's cookies. Never defaulted: a wrong domain mints links to someone else's names.
+  # The chart refuses to render one that shares its registrable domain with `appUrl` (or
+  # `previews.appUrl`). It compares the last two labels, three under a multi-label public suffix
+  # it knows (`co.uk`, `com.au`, …; `ryph.registrableDomain` in _helpers.tpl), so under one it does
+  # not know it can refuse two domains that are in fact distinct.
+  domain: ""
+  # -- The port a browser reaches previews on, when it is not the scheme's default
+  # (RYPH_PREVIEWS_PUBLIC_PORT; `"7490"` behind a port-forward).
+  publicPort: ""
+  # -- Where a link opened without the viewer cookie goes for a ticket. Empty: `appUrl`.
+  appUrl: ""
+  # -- Cap every TCP socket's kernel buffers in the previews pods at 128 KiB each way
+  # (`net.ipv4.tcp_rmem`/`tcp_wmem` pod sysctls). They count against the memory limit, and left to
+  # the kernel each can grow to some 4 MiB sent and 6 MiB received under a page that never reads,
+  # faster than the pod samples its memory. Safe sysctls from Kubernetes 1.32 (kernel 4.15+; GKE Autopilot admits
+  # them, checked on 1.35); on an older cluster a pod with them is refused (`SysctlForbidden`).
+  # Turning this off removes that protection, and more memory does not make up for it: the pod
+  # logs `previews.socket_buffers_uncapped` at boot when its sockets may grow past 128 KiB.
+  capSocketBuffers: true
+  # -- EXPERIMENTAL above 1: not run in any cell yet (the README's "Several previews replicas"
+  # lists what to check first). Previews pods, one Deployment each (`previews-0` …
+  # `previews-<N-1>`, each with its own Service); one replica is the single Deployment `previews`.
+  # Each run's previews live on one of them, picked by its id, and any pod forwards what it gets
+  # for a run to that one; nothing fails over, so a pod that is down takes its runs' previews with
+  # it until it is back: replicas do not make a run's previews more available. Every cap is per
+  # pod — 256 previews, 768 streams — but a browser request through a pod that does not own its
+  # run crosses two pods and is counted on both. Those counts are constants, so past about 1 GiB
+  # more memory per pod only moves its watermarks; more replicas are for when one pod's counts are
+  # not enough (`preview.refused` with `cap: pod…`, or registrations answered with
+  # `preview limit reached`), or to keep a pod's failure to a share of the runs. Changing it
+  # restarts EVERY previews pod (each one's owner map changes), so every preview reconnects. Set
+  # it here and never scale a Deployment by hand: a second pod of an ordinal splits its runs'
+  # state. Runs must reach each previews pod's own Service on its tunnel port (7491): if they reach
+  # previews through a gate that relays one address, keep it at 1.
+  replicas: 1
+  # -- The memory limit is what each previews pod measures itself against, about once a second
+  # (its cgroup's usage less inactive file cache). Past 3/4 of it (HIGH), when what the runs hold
+  # explains at least half of its growth since its baseline (the least it held unpressed over the
+  # 5 minutes before, capped at 0.65 of the limit), the runs holding at least 1 MiB, the mean of
+  # the runs', and their share of half the growth (split among those past the mean) are named
+  # culprits: they get nothing new and lose every stream holding bytes, and nobody else is
+  # touched; with none, `previews.memory.unexplained` or `.no_culprit` says why. Past 9/10
+  # (CRITICAL), everyone is refused and streams are closed, the culprits' first. Raise it when `preview.refused` shows `cap: memory-…` in normal use; it does not raise
+  # what one run may hold (64 streams, a constant). Keep request and limit equal: below it, a
+  # node short of memory may evict the pod first. The README's "Sizing previews" has the rest.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 768Mi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# The optional Radicle forge: a node and a bridge in one StatefulSet.
+radicle:
+  enabled: false
+  # -- The node's key passphrase (RAD_PASSPHRASE). Empty means an unencrypted key, protected by the
+  # Secret alone.
+  passphrase: ""
+  alias: ""
+  # -- Seeds to connect to, comma-separated `<nid>@<host>:<port>` (RYPH_RADICLE_CONNECT).
+  connect: ""
+  # -- The address the node advertises; only with an inbound listener (RYPH_RADICLE_EXTERNAL_ADDRESS).
+  externalAddress: ""
+  # -- A thread URL template, `{rid}`, `{kind}` and `{id}` substituted (RYPH_RADICLE_EXPLORER_URL).
+  explorerUrl: ""
+  # -- How often the bridge re-reads the storage refs (RYPH_RADICLE_RECONCILE_SECONDS).
+  reconcileSeconds: 300
+  # The deployment's Radicle identity: a Secret with the files `radicle` and `radicle.pub`.
+  key:
+    # -- A Secret you manage with the key pair (recommended).
+    existingSecret: ""
+    # -- Or the key pair itself; the chart creates Secret `radicle-key`.
+    private: ""
+    public: ""
+  storage:
+    size: 20Gi
+    storageClassName: ""
+  nodeResources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  bridgeResources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: 2Gi
+  extraEnv: []
+  extraSecretData: {}
+  existingSecret: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # -- The node's storage is a ReadWriteOnce disk, so the pod can only start where that disk can
+  # attach. A cluster autoscaler consolidating nodes would move it anyway, and the disk then has to
+  # detach from the old node first; on GKE that detach once hung for over 20 minutes and took the
+  # node down with it. Not safe to evict keeps the autoscaler off the node this pod runs on.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+
+# ── the front door ─────────────────────────────────────────────────────────────────────────────
+
+# Four paths reach the cluster, and no others: `/` is the app, `/v1/hooks/github` and
+# `/v1/hooks/gitlab` (exact) the forge's GitHub and GitLab webhook intake, and the rest of
+# `/v1/hooks/` the automations ingestion door. With previews on, `*.<previews.domain>` goes to the
+# previews public port. Also set `networkPolicy.frontDoor.from` so the pods behind those routes
+# admit what fronts them.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # -- The app's hostname.
+  host: ""
+  # -- Route `/v1/hooks/` to the forge and the automations service.
+  routeHooks: true
+  tls:
+    enabled: false
+    # -- The certificate Secret (cert-manager can create it from `annotations`).
+    secretName: ""
+  previews:
+    annotations: {}
+    tls:
+      enabled: false
+      # -- A wildcard certificate for `*.<previews.domain>`.
+      secretName: ""
+
+# Gateway API routes, attached to a Gateway you run.
+httpRoute:
+  enabled: false
+  annotations: {}
+  # -- The Gateway (and listener) the app's route attaches to, e.g.
+  # `[{name: ryph, namespace: ryph-system, sectionName: https}]`.
+  parentRefs: []
+  # -- Hostnames. Empty: `ingress.host`.
+  hostnames: []
+  routeHooks: true
+  # -- Listeners that answer with a 301 to https instead (a plain-http listener). Empty: no
+  # redirect route.
+  redirectParentRefs: []
+  # The previews wildcard route, on the same Gateway.
+  previews:
+    parentRefs: []
+    redirectParentRefs: []
+
+# ── dev only ───────────────────────────────────────────────────────────────────────────────────
+
+# A Postgres and an S3-compatible store (SeaweedFS) in the cluster, with fixed public credentials. NEVER in production: the
+# passwords are in this repository, the data lives on one small PVC each, and nothing backs it up.
+devState:
+  enabled: false
+  postgres:
+    image: postgres:17-alpine
+    user: ryph
+    password: ""
+    storage: 2Gi
+  # SeaweedFS's S3 gateway, as the networked compose runs it.
+  objects:
+    image: chrislusf/seaweedfs:4.46
+    accessKey: ""
+    secretKey: ""
+    # -- Signs the filer's internal API tokens.
+    signingKey: ""
+    storage: 2Gi
+
+# -- Extra manifests, each rendered through `tpl` (so `{{ include "ryph.ns.services" . }}` works),
+# for what a cluster needs beside the chart: a provider's backend or health-check policies, an
+# internal load balancer, a compute class. A list, or a map of name → manifest: maps merge across
+# values files (a shared file and a per-release one can each add entries; `null` removes one).
+extraObjects: {}

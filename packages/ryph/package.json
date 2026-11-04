@@ -1,0 +1,41 @@
+{
+  "name": "@ryph/cli",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "bun --no-env-file src/main.ts",
+    "build:app": "bun run --filter '@ryph/app' build",
+    "compile": "bun run build:app && bun --no-env-file scripts/compile.ts",
+    "check": "tsgo -p .",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "ci": "bun run check && bun run test",
+    "release": "bun --no-env-file scripts/release.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@ryph/auth": "workspace:*",
+    "@ryph/automations": "workspace:*",
+    "@ryph/chat": "workspace:*",
+    "@ryph/db": "workspace:*",
+    "@ryph/host": "workspace:*",
+    "@ryph/mcp-gateway": "workspace:*",
+    "@ryph/memory": "workspace:*",
+    "@ryph/orchestrator": "workspace:*",
+    "@ryph/process": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/cli": "npm:@jsr/std__cli@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@std/streams": "npm:@jsr/std__streams@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "drizzle-orm": "^0.44.7",
+    "@ryph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@ryph/sealed": "workspace:*"
+  }
+}

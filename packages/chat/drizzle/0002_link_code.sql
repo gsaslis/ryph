@@ -1,0 +1,1 @@
+ALTER TABLE "chatrooms" ADD COLUMN "link_code" text;

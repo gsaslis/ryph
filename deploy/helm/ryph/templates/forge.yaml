@@ -1,0 +1,265 @@
+{{- /*
+The forge: the GitHub and GitLab boundary and the git gateway every run clones through. Patch bundles go to
+object storage, which is what lets it run more than one replica; /data holds only the bare-clone
+cache and per-request staging, both disposable, so it is an emptyDir.
+*/ -}}
+{{- $v := .Values.forge -}}
+{{- $image := include "ryph.image" (list . .Values.images.forge) -}}
+{{- $secret := include "ryph.secretName" (list . "forge") -}}
+{{- $env := include "ryph.forge.env" . | fromYamlArray -}}
+{{- $githubKey := and .Values.github.enabled (or .Values.github.privateKey .Values.github.privateKeySecret) -}}
+{{- $gitlabCa := include "ryph.gitlab.ca" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "forge") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  # One replica still rolls by adding before it removes, but the rollout rests on that, so it is
+  # said out loud rather than left to arithmetic.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  # As on the app: a load balancer takes far longer to put a new pod into rotation than the
+  # kubelet takes to call it ready, and the forge is on the public door too (GitHub's and GitLab's webhooks).
+  minReadySeconds: 60
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forge
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "forge" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "forge"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The pre-stop pause (60s) plus the drain deadline (25s), with a margin.
+      terminationGracePeriodSeconds: 95
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        fsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if or .Values.migrations.enabled $gitlabCa }}
+      initContainers:
+        {{- if $gitlabCa }}
+        {{- /*
+        git takes one CA bundle, and GIT_SSL_CAINFO replaces its own rather than adding to it, so
+        the forge's git would trust GitLab's CA and nothing else (GitHub's clones among what it
+        loses). The bundle it reads is the image's own public CAs with GitLab's after them, built
+        here from the image it runs, so it follows the image's CAs on every upgrade.
+        */}}
+        - name: ca-bundle
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              grep -q 'BEGIN CERTIFICATE' /etc/ryph/gitlab-ca/ca.pem
+              || { echo "gitlab.caSecret's key holds no PEM certificate" >&2; exit 1; };
+              cat /etc/ssl/certs/ca-certificates.crt /etc/ryph/gitlab-ca/ca.pem
+              > /out/ca-certificates.crt
+          volumeMounts:
+            {{- include "ryph.gitlab.caMount" . | nindent 12 }}
+            - name: ca-bundle
+              mountPath: /out
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- /* The forge's webhooks table, in the forge's database; creates it first when missing. */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate-webhooks" "workingDir" "/app/packages/webhooks" "variable" "RYPH_WEBHOOKS_DB" "owner" "forge" "secret" $secret "key" "RYPH_FORGE_DB" "ensure" true) | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: forge
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7412
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if $githubKey }}
+            - name: github-app
+              mountPath: /secrets/github
+              readOnly: true
+            {{- end }}
+            {{- if $gitlabCa }}
+            {{- include "ryph.gitlab.caMount" . | nindent 12 }}
+            - name: ca-bundle
+              mountPath: /etc/ryph/ca-bundle
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 4Gi
+        {{- if $githubKey }}
+        # 0440, readable through the pod's fsGroup: the forge user and nobody else.
+        - name: github-app
+          secret:
+            secretName: {{ .Values.github.privateKeySecret | default "forge-github-app" }}
+            defaultMode: 288 # 0440
+        {{- end }}
+        {{- if $gitlabCa }}
+        {{- include "ryph.gitlab.caVolume" . | nindent 8 }}
+        - name: ca-bundle
+          emptyDir:
+            sizeLimit: 8Mi
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "forge") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: forge
+  ports:
+    - name: http
+      port: 7412
+      targetPort: http
+
+{{- define "ryph.forge.env" -}}
+- name: RYPH_FORGE_PORT
+  value: "7412"
+- name: RYPH_FORGE_DATA
+  value: /data
+- name: RYPH_LOG_FORMAT
+  value: json
+# Keep serving this long after SIGTERM: a load balancer that addresses pods directly takes tens of
+# seconds to stop sending to a stopping one.
+- name: RYPH_PRE_STOP_MS
+  value: "60000"
+- name: RYPH_ORCHESTRATOR_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+- name: RYPH_PATCH_STORE
+  value: s3
+- name: RYPH_S3_ENDPOINT
+  value: {{ include "ryph.objectStore.endpoint" . | quote }}
+- name: RYPH_S3_BUCKET
+  value: {{ .Values.objectStore.bucket | quote }}
+- name: RYPH_S3_REGION
+  value: {{ .Values.objectStore.region | quote }}
+- name: RYPH_S3_FORCE_PATH_STYLE
+  value: {{ .Values.objectStore.forcePathStyle | toString | quote }}
+{{- with .Values.objectStore.prefix }}
+- name: RYPH_S3_PREFIX
+  value: {{ . | quote }}
+{{- end }}
+{{- include "ryph.objectStore.secretEnv" . }}
+{{- include "ryph.db.secretEnv" (list . "forge" "RYPH_FORGE_DB") }}
+{{- if and .Values.github.enabled (or .Values.github.privateKey .Values.github.privateKeySecret) }}
+- name: RYPH_GITHUB_PRIVATE_KEY_PATH
+  value: /secrets/github/github-app.pem
+{{- end }}
+{{- if .Values.gitlab.enabled }}
+{{- include "ryph.gitlab.check" . }}
+# The instance and how ryph acts on it. The credentials sit in the forge's Secret (or the token in
+# `gitlab.tokenSecret`); the group is a path, not a secret.
+- name: RYPH_GITLAB_URL
+  value: {{ .Values.gitlab.url | default "https://gitlab.com" | quote }}
+- name: RYPH_GITLAB_MODE
+  value: {{ .Values.gitlab.mode | default "bot" | quote }}
+{{- with .Values.gitlab.group }}
+- name: RYPH_GITLAB_GROUP
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.gitlab.tokenSecret }}
+- name: RYPH_GITLAB_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ . }}
+      key: token
+{{- end }}
+{{- if include "ryph.gitlab.ca" . }}
+# Its CA, for the forge's API calls (added to the runtime's) and its git (a whole bundle, which the
+# ca-bundle init container builds).
+{{ include "ryph.gitlab.caEnv" . }}
+- name: GIT_SSL_CAINFO
+  value: /etc/ryph/ca-bundle/ca-certificates.crt
+{{- end }}
+{{- end }}
+{{- if .Values.radicle.enabled }}
+# The forge's half of the Radicle link. An empty RYPH_RADICLE_URL is what keeps the provider
+# unregistered everywhere else, so setting it here is exactly what "this deployment speaks Radicle"
+# means.
+- name: RYPH_RADICLE_URL
+  value: {{ include "ryph.url" (list . "radicle" "services" 7470) }}
+# One link, one token: the bridge presents the same value back when it hands the forge an event. It
+# lives in the `radicle` Secret so that enabling Radicle adds a credential in one place.
+- name: RYPH_RADICLE_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ryph.secretName" (list . "radicle") }}
+      key: RYPH_RADICLE_TOKEN
+# The explorer template, read by BOTH sides. Optional: without it neither side invents a link.
+- name: RYPH_RADICLE_EXPLORER_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ryph.secretName" (list . "radicle") }}
+      key: RYPH_RADICLE_EXPLORER_URL
+      optional: true
+{{- end }}
+{{- end -}}

@@ -1,0 +1,1 @@
+CREATE INDEX "history_events_lane_lifecycle" ON "history_events" USING btree ("run_id","lane","kind","seq") WHERE "history_events"."voice" = 'transcript' and "history_events"."kind" in ('subagent.start', 'subagent.resume', 'subagent.end');

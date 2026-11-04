@@ -1,0 +1,9 @@
+# Bun loads .env, .env.local and .env.<NODE_ENV> from the working directory into process.env on
+# its own. Off: a service reads the environment it was given, and a dev script that wants a file
+# names it (`--env-file=.env`). This file is only read from the directory bun runs in, so package
+# scripts pass `--no-env-file` too. See docs/runtime.md.
+env = false
+
+# JSR packages (@std/*, @cliffy/*) install through JSR's npm-compatible registry.
+[install.scopes]
+"@jsr" = "https://npm.jsr.io"

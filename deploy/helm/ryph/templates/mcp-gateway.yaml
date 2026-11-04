@@ -1,0 +1,166 @@
+{{- /*
+The mcp-gateway: the one holder of RYPH_MCP_KEY, and the model-proxy's shape one secret class over.
+Two listeners, kept apart by the NetworkPolicies: runs reach :7430 (data, spending a run's virtual
+token) and only the control plane and the app reach :7431 (control, managing servers, the tool-call
+trail, and the internal surface that mints a run's credential).
+
+HOSTED servers run in the tools namespace. A Kubernetes Role (tools.yaml) is the bargain here: a few
+verbs, one namespace, no way to read a Secret back. So this pod gets a ServiceAccount token — the only
+service besides the control plane that does — and `RYPH_TOOL_HOST=kubernetes` turns hosting on.
+*/ -}}
+{{- $v := .Values.mcpGateway -}}
+{{- $image := include "ryph.image" (list . .Values.images.mcpGateway) -}}
+{{- $secret := include "ryph.secretName" (list . "mcpGateway") -}}
+{{- $env := include "ryph.mcpGateway.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-gateway
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "mcp-gateway") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "mcp-gateway" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "mcpGateway"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      # The one credential this pod is given beyond its own secrets, and it buys exactly the tools
+      # namespace. Runs never reach the control listener, so nothing a run does can ask it to
+      # spend this token; the gateway spends it only to launch, stop, inspect and read logs.
+      serviceAccountName: mcp-gateway
+      # Mounted into the mcp-gateway container alone, never the migrate init container
+      # (ryph.apiToken.volume says why).
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- include "ryph.apiToken.volume" . | nindent 8 }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+      initContainers:
+        {{- /* Creates the database first when it is missing. */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/mcp-gateway" "variable" "RYPH_DB" "owner" "mcpGateway" "secret" $secret "key" "RYPH_DB" "ensure" true) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: mcp-gateway
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: data
+              containerPort: 7430
+            - name: control
+              containerPort: 7431
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: control
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: control
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- include "ryph.apiToken.mount" . | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-gateway
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "mcp-gateway") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: mcp-gateway
+  ports:
+    - name: data
+      port: 7430
+      targetPort: data
+    - name: control
+      port: 7431
+      targetPort: control
+
+{{- define "ryph.mcpGateway.env" -}}
+- name: RYPH_MCP_GATEWAY_PORT
+  value: "7430"
+- name: RYPH_MCP_GATEWAY_CONTROL_PORT
+  value: "7431"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+# What a RUN dials as its "MCP server": the data listener, by its cross-namespace name. The control
+# plane hands this string to a run verbatim.
+- name: RYPH_MCP_GATEWAY_URL
+  value: {{ include "ryph.url" (list . "mcp-gateway" "services" 7430) }}
+- name: RYPH_AUTH_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+# The platform's memory, chat and web servers: their rows are seeded at boot, and a run's tool calls
+# are forwarded to them with the gateway's token and the run's id.
+- name: RYPH_MEMORY_URL
+  value: {{ include "ryph.url" (list . "memory" "services" 7440) }}
+- name: RYPH_CHAT_URL
+  value: {{ include "ryph.url" (list . "chat" "services" 7450) }}
+- name: RYPH_WEB_URL
+  value: {{ include "ryph.url" (list . "web" "services" 7480) }}
+{{- if include "ryph.forgeTools" . }}
+# The platform's forge server, where the forge has a GitHub App, GitLab or Radicle to act
+# through. Its token (RYPH_FORGE_GATEWAY_TOKEN) rides the Secret; the URL is plain env, so it
+# follows the namespaces like every other.
+- name: RYPH_FORGE_TOOLS_URL
+  value: {{ include "ryph.url" (list . "forge" "services" 7412) }}
+{{- end }}
+# Hosted servers, into the namespace tools.yaml grants and nowhere else. The API server, this pod's
+# token and its CA all come from the mounted service account.
+- name: RYPH_TOOL_HOST
+  value: kubernetes
+- name: RYPH_TOOL_HOST_NAMESPACE
+  value: {{ include "ryph.ns.tools" . }}
+{{- with .Values.tools.runtimeClassName }}
+# Every hosted MCP server sandboxed: a vendor's container is somebody else's code on the same terms
+# a run's is. The tool guard is exempt — our own build, streaming SSE for a session's length.
+- name: RYPH_TOOL_HOST_RUNTIME_CLASS
+  value: {{ . | quote }}
+{{- end }}
+# The tool guard: the one entry point onto the tools namespace, launched by this process at boot
+# with a token minted there.
+- name: RYPH_TOOL_GUARD_IMAGE
+  value: {{ include "ryph.image" (list . .Values.images.toolGuard) }}
+{{- include "ryph.db.secretEnv" (list . "mcpGateway" "RYPH_DB") }}
+{{- end -}}

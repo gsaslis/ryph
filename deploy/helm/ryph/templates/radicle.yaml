@@ -1,0 +1,296 @@
+{{- /*
+The OPTIONAL Radicle service: one pod, two containers, one volume mounted as RAD_HOME by both.
+
+A StatefulSet, and it has to be one. Every other service keeps its durable state in Postgres or in
+object storage; this one's disk IS the repository storage, and the identity in it is what every
+patch this deployment ever pushed was signed with. The key is therefore provisioned from a Secret
+(`radicle.key`) rather than generated onto the volume: storage is re-fetchable, authorship is not.
+The entrypoint copies it in on first boot and never again.
+
+The two containers share a UNIX socket inside the volume, which is why fsGroup and both images' uid
+are the same number (1994). `git-remote-rad` writes a patch straight into storage on the local
+filesystem, so the bridge cannot be a separate pod dialling the node.
+
+One replica, and not a knob: two nodes on one RAD_HOME corrupt it, and two RAD_HOMEs would be two
+identities.
+*/ -}}
+{{- if .Values.radicle.enabled }}
+{{- $v := .Values.radicle -}}
+{{- $image := include "ryph.image" (list . .Values.images.radicle) -}}
+{{- $secret := include "ryph.secretName" (list . "radicle") -}}
+{{- $env := include "ryph.radicle.env" . | fromYamlArray -}}
+{{- $keySecret := $v.key.existingSecret | default (ternary "radicle-key" "" (not (empty $v.key.private))) -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: radicle
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "radicle") | nindent 4 }}
+spec:
+  serviceName: radicle
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radicle
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "radicle" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "radicle"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The bridge's drain deadline (25s) with room, and the node stops in well under a second.
+      terminationGracePeriodSeconds: 45
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with $v.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        # What makes the shared control socket work: the volume and everything written into it
+        # belongs to this group, so either container can open what the other created.
+        fsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        {{- /* The bridge's schema, in its own image; creates the database first (nothing else will have). */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/radicle" "variable" "RYPH_RADICLE_DB" "owner" "radicle" "secret" $secret "key" "RYPH_RADICLE_DB" "ensure" true) | nindent 8 }}
+      {{- end }}
+      containers:
+        # ── the node ─────────────────────────────────────────────────────────────────────────────
+        # Upstream's binary, PID 1 in its container, `radicle-node` and never `rad node start`
+        # (which forks and returns). It holds no port anyone in the cluster reaches: there is no
+        # Service for :8776 and the NetworkPolicy admits nothing to it.
+        - name: radicle-node
+          image: {{ include "ryph.image" (list . .Values.images.radicleNode) }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: p2p
+              containerPort: 8776
+          # RAD_PASSPHRASE, and the optional RYPH_RADICLE_CONNECT / _EXTERNAL_ADDRESS / _ALIAS.
+          # No `env:` block: a name set there WINS over envFrom, which would make the Secret's
+          # value dead config.
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/radicle
+            - name: key
+              mountPath: /run/secrets/radicle
+              readOnly: true
+          readinessProbe:
+            # The one form of `rad node status` whose exit code means anything: it prints the NID
+            # and exits 0 only when the node answers on the control socket.
+            exec:
+              command: ["rad", "node", "status", "--only", "nid"]
+            periodSeconds: 10
+            # First boot writes the key, the config and the databases.
+            initialDelaySeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rad", "node", "status", "--only", "nid"]
+            periodSeconds: 30
+            initialDelaySeconds: 30
+            failureThreshold: 4
+          resources:
+            {{- toYaml $v.nodeResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+        # ── the bridge ───────────────────────────────────────────────────────────────────────────
+        - name: radicle
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7470
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/radicle
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          # ephemeral-storage is for the odd temp file; a submission's scratch clone and the git
+          # door's mirrors live under RAD_HOME, on the volume.
+          resources:
+            {{- toYaml $v.bridgeResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: key
+          secret:
+            secretName: {{ $keySecret | default "radicle-key" }}
+            # 0440, readable through the pod's fsGroup and by nobody else. The entrypoint copies it
+            # to RAD_HOME/keys on first boot at 0600.
+            defaultMode: 288 # 0440
+            {{- if not $keySecret }}
+            # No key provided: the node generates an identity onto its volume. Laptop clusters only.
+            optional: true
+            {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # RWO, which is all a single replica needs and all that two containers in one pod need.
+        accessModes: [ReadWriteOnce]
+        {{- with $v.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $v.storage.size }}
+---
+# The BRIDGE's port and nothing else. There is deliberately no Service for :8776: the node is
+# outbound-only, because a fetch rides the peer connection it opened.
+apiVersion: v1
+kind: Service
+metadata:
+  name: radicle
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "radicle") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: radicle
+  ports:
+    - name: http
+      port: 7470
+      targetPort: http
+---
+# Who may talk to the Radicle pod, and where it may talk. ONE POLICY, TWO CONTAINERS: a policy selects
+# PODS, so the rules are the UNION of what the node and the bridge need — the bridge inherits the
+# node's way out on :8776, the node the bridge's reach to the forge and the database. That cannot be
+# fixed inside Kubernetes; both containers are our own builds and the node holds no HTTP credential.
+#
+# INGRESS IS THE FORGE AND NOTHING ELSE: the bridge can write to a repository as this deployment's
+# identity, and the only caller that should hold that ability is the service that already holds
+# the GitHub App's. No rule for :8776 either, so the node is outbound-only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: radicle
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: radicle
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: forge
+      ports:
+        - port: 7470
+    {{- with (get .Values.networkPolicy.extraIngress "radicle") }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- include "ryph.netpol.dns" . | nindent 4 }}
+    # The event sink: a ForgeEvent goes to the forge's mailroom, never to the orchestrator.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: forge
+      ports:
+        - port: 7412
+    {{- include "ryph.netpol.database" . | nindent 4 }}
+    # The Radicle network. ONE PORT, not 80/443: a p2p protocol on :8776, and nothing here speaks
+    # HTTP outward. Every private and link-local range excepted, so a seed address someone
+    # configures cannot be another service, the database, a node or the metadata server. A private
+    # Radicle network whose seeds are inside the cluster names them in networkPolicy.extraEgress.
+    {{- include "ryph.netpol.internet" (list . (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16" "127.0.0.0/8") (list 8776)) | nindent 4 }}
+    {{- with (get .Values.networkPolicy.extraEgress "radicle") }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+# The other half of the bridge's event link: the forge's own policy admits the control plane, the
+# gateway, runs, builds and checks; policies are additive, so this adds the bridge. Without it every
+# event delivery is dropped silently — a timeout on the bridge and a `/ryph` comment nobody answers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forge-from-radicle
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: forge
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: radicle
+      ports:
+        - port: 7412
+{{- end }}
+
+{{- define "ryph.radicle.env" -}}
+- name: RYPH_RADICLE_PORT
+  value: "7470"
+- name: RAD_HOME
+  value: /data/radicle
+- name: RYPH_LOG_FORMAT
+  value: json
+# Where a ForgeEvent goes: the mailroom mounted in the FORGE, whose sweeper delivers it to the
+# orchestrator exactly as an inbound GitHub hook is. The bearer is RYPH_RADICLE_TOKEN — the same one
+# the forge presents coming the other way: one link, one credential.
+- name: RYPH_RADICLE_EVENTS_URL
+  value: {{ include "ryph.url" (list . "forge" "services" 7412) }}/v1/hooks/radicle
+# The event stream is a live channel with no replay, so a slow pass over the storage refs is the
+# correctness path and the stream is only the fast one.
+- name: RYPH_RADICLE_RECONCILE_SECONDS
+  value: {{ .Values.radicle.reconcileSeconds | toString | quote }}
+{{- include "ryph.db.secretEnv" (list . "radicle" "RYPH_RADICLE_DB") }}
+{{- end -}}

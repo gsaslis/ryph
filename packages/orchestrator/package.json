@@ -1,0 +1,48 @@
+{
+  "name": "@ryph/orchestrator",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./schema": "./src/adapters/store/db/schema.ts",
+    "./api-schema": "./src/schema.ts",
+    "./artifact-sanitizer": "./src/adapters/artifact_html/sanitizer.ts",
+    "./docker": "./src/docker.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=.env src/main.ts",
+    "debug": "RYPH_DB=pglite:memory:// bun --no-env-file --inspect-wait src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts && bun run lint:length && bun run lint:shell",
+    "lint:length": "bun --no-env-file scripts/check_file_lengths.ts",
+    "lint:shell": "bun --no-env-file scripts/shellcheck.ts",
+    "db:push": "bun --env-file=.env x drizzle-kit push",
+    "db:generate": "bun --env-file=.env x drizzle-kit generate",
+    "db:migrate": "bun --env-file=.env x drizzle-kit migrate",
+    "db:studio": "bun --env-file=.env x drizzle-kit studio",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@ryph/auth": "workspace:*",
+    "@ryph/db": "workspace:*",
+    "@ryph/forge": "workspace:*",
+    "@ryph/logger": "workspace:*",
+    "@ryph/mcp-gateway": "workspace:*",
+    "@ryph/model-proxy": "workspace:*",
+    "@ryph/process": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@ryph/shared": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@std/yaml": "npm:@jsr/std__yaml@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "^0.44.7",
+    "parse5": "^7.3.0",
+    "postgres": "^3.4.9"
+  }
+}

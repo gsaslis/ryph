@@ -1,0 +1,13 @@
+{
+  "id": "redis",
+  "name": "Redis",
+  "description": "The official Redis image. Needs SETPCAP on top of the usual set — its entrypoint drops privileges with setpriv, which shrinks the bounding set, which nothing else here does.",
+  "docs": "https://hub.docker.com/_/redis",
+  "versions": {
+    "8": "redis:8@sha256:298e5b3bc566bade82f46ad5511777a4a07a294097ce16ada2f6a42be5239df5"
+  },
+  "defaultPort": 6379,
+  "capabilities": ["CHOWN", "SETGID", "SETPCAP", "SETUID"],
+  "memory": "256m",
+  "env": []
+}

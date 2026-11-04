@@ -1,0 +1,82 @@
+{{- /*
+What the mcp-gateway may do in the tools namespace: the grant that makes hosted MCP servers possible.
+
+The gateway holds RYPH_MCP_KEY, which unseals every MCP credential in the platform. That is why it is
+never given a docker socket: a socket is root on the machine. What it is given here is a token for a
+Role in one namespace, listing the verbs packages/mcp-gateway/src/adapters/tool_host/kubernetes.ts
+uses and nothing else.
+
+- deployments and services: one of each per hosted server, created, scaled and deleted by name.
+- secrets CREATE and DELETE, never get or list. A hosted server's settings and its caller token go
+  into a Secret the Deployment owns. This is not a boundary the withheld verbs draw on their own:
+  anything that can define a pod spec in a namespace can mount any Secret in it, and `get pods/log`
+  reads the result. The guarantee is about the namespace's contents — NO SECRET THE GATEWAY DID NOT
+  WRITE ITSELF EXISTS IN THE TOOLS NAMESPACE — and it holds only as long as that stays true. Nothing
+  else may place a Secret there: not an operator's credential, not a pull secret, not a certificate.
+- pods and pods/log, read-only: `inspect` reads a Deployment's readiness, and an operator asking a
+  misbehaving server for its logs is answered from here.
+- leases: `create`, and `get`/`update` on `mcp-hosting` alone. Two gateways run at once through
+  every rolling update, so only the one holding this lease launches or stops anything.
+
+Deliberately absent: any verb on a namespace, a NetworkPolicy, RBAC, or anything outside the tools
+namespace. The boundary this process runs behind is not one it can edit.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-gateway
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with .Values.mcpGateway.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ryph-tool-host
+  namespace: {{ include "ryph.ns.tools" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete"]
+  # Write-only, on purpose: see the header.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["mcp-hosting"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ryph-tool-host
+  namespace: {{ include "ryph.ns.tools" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ryph-tool-host
+subjects:
+  - kind: ServiceAccount
+    name: mcp-gateway
+    namespace: {{ include "ryph.ns.services" . }}

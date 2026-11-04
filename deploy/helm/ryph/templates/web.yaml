@@ -1,0 +1,112 @@
+{{- /*
+The web service: the platform's `web__search` and `web__fetch`, reached only through the MCP gateway.
+The one service with NO state — no database, no volume, nothing to migrate — so it restarts and
+redeploys freely. Runs never reach it directly: a run reaches the web as the gateway's scoped,
+metered forward of its tool calls.
+
+It is the service that dials an address an AGENT chose. Two layers hold that: the service refuses
+every non-public address itself, on every redirect hop, and this pod's egress rule excepts every
+private range — because a name can answer differently between the check and the connection.
+*/ -}}
+{{- $v := .Values.web -}}
+{{- $env := include "ryph.web.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "web") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "web" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "web"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      containers:
+        - name: web
+          image: {{ include "ryph.image" (list . .Values.images.web) }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7480
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          # RYPH_WEB_GATEWAY_TOKEN, and RYPH_WEB_SEARCH_KEY where the deployment has one: the key
+          # is a Secret and nothing else — never in an env list, a log line, or anything a run reads.
+          envFrom:
+            - secretRef:
+                name: {{ include "ryph.secretName" (list . "web") }}
+          # Readiness is a real check: /readyz converts a tiny page, so a replica reads ready only
+          # when the thing it exists to do works end to end. Memoised for 30s by the service.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          # From measurements on adversarial pages at the 1 MB HTML cap: ~400 MB resident per
+          # conversion at worst, two conversions at once, a ~150 MB floor, and ~2x for the GC's
+          # slack → 2Gi, with the limit equal: past it is a bug, and OOMKilling one pod is the answer.
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "web") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 7480
+      targetPort: http
+
+{{- define "ryph.web.env" -}}
+- name: RYPH_WEB_PORT
+  value: "7480"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+{{- end -}}

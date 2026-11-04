@@ -1,0 +1,119 @@
+{{- /*
+The chat service: the team's incident chatrooms, the bindings from runs to rooms and the poller's
+cursors, on its own database. Every mention goes to the control plane's mention door; the control
+plane opens and closes bindings, checks commanders and reads threads over its internal surface; the
+gateway forwards a run's `chat__post` to its MCP route; the app manages rooms with a user bearer.
+Runs never reach it directly. It dials the public internet on purpose: the Telegram Bot API, Slack
+(a Socket Mode WebSocket), Discord (its REST API and Gateway WebSocket) and the Zulip organizations
+an admin named, with credentials that never leave this pod.
+*/ -}}
+{{- $v := .Values.chat -}}
+{{- $image := include "ryph.image" (list . .Values.images.chat) -}}
+{{- $secret := include "ryph.secretName" (list . "chat") -}}
+{{- $env := include "ryph.chat.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "chat") | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chat
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "chat" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "chat"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 35
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+      initContainers:
+        {{- /* Creates the database first, for servers that predate chat. */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/chat" "variable" "RYPH_CHAT_DB" "owner" "chat" "secret" $secret "key" "RYPH_CHAT_DB" "ensure" true) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: chat
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7450
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "chat") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: chat
+  ports:
+    - name: http
+      port: 7450
+      targetPort: http
+
+{{- define "ryph.chat.env" -}}
+- name: RYPH_CHAT_PORT
+  value: "7450"
+- name: RYPH_LOG_FORMAT
+  value: json
+- name: RYPH_PRE_STOP_MS
+  value: "5000"
+- name: RYPH_AUTH_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+# Where a mention in a room goes: the run's inbox, on the control plane's chat surface, with the
+# same token (in the secret) the control plane presents here.
+- name: RYPH_ORCHESTRATOR_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+{{- include "ryph.db.secretEnv" (list . "chat" "RYPH_CHAT_DB") }}
+{{- end -}}

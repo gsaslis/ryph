@@ -1,0 +1,11 @@
+#!/bin/sh
+# dev — the local dev-stack controller; see packages/devstack/src/main.ts.
+#
+# It lives at the repo root and is run as `./dev`, deliberately. The shipping product is also a
+# CLI called `ryph` (packages/ryph), and a dev tool installed onto PATH under that name would
+# shadow it — so this one is never installed anywhere and cannot be invoked by accident.
+#
+# Its dependencies (cliffy) are a workspace member's, installed by `bun install` at the root and
+# pinned by bun.lock. --no-env-file: a stray .env in the working directory is not the CLI's.
+root="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec bun --no-env-file "$root/packages/devstack/src/main.ts" "$@"

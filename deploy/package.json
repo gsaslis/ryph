@@ -1,0 +1,16 @@
+{
+  "name": "@ryph/deploy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test --no-env-file --timeout 60000 helm/ compose-networked/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@ryph/process": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/cli": "npm:@jsr/std__cli@1"
+  }
+}

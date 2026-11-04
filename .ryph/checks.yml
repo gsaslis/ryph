@@ -1,0 +1,83 @@
+# The commands a change to ryph must pass before it merges, run by ryph itself on the change's
+# head commit (packages/orchestrator/docs/checks.md). The same gate as CI's `bun run ci`, split
+# so the forge says which part failed, plus the migration check from check-migrations.yml.
+#
+# The packages with the slowest tests get a check each, so an agent working on one can run just
+# that one (`ryph__run_checks`) before the whole suite. `rest` runs every other package, so a new
+# package is checked without being listed here. The checks run side by side out of one memory and
+# cpu pool, the pod's: each is guaranteed an even share and may borrow what the others leave, so
+# every check added lowers the share each one is guaranteed (and the one furthest over its share is
+# stopped when the pool runs short).
+#
+# The checks whose packages have drizzle tests run them over the `db` service (.ryph/services.yml)
+# with RYPH_TEST_DB, not on the in-process PGlite their tests open by default: one PGlite per test,
+# across every `bun test --parallel` worker, is what ran the orchestrator check past its share. A
+# service is outside the pool, so those databases' memory leaves it. Each test gets a database of
+# its own on the one server, copied from a template (@ryph/db/testing's `cloneTestDb`), so the
+# checks share it without meeting. The URL is set on the test command alone: the type checks and
+# guards never dial it. Locally `bun run test` stays on PGlite, which keeps that driver covered.
+#
+# Every check starts in the checkout the environment image baked, moved to the head, with the
+# node_modules setup.yml installed when the image was built. So the setup step below is a no-op
+# when bun.lock matches the image's, and fetches only the difference when it does not. It runs
+# once in each check's own container.
+setup:
+  - run: bun install --frozen-lockfile
+checks:
+  # dprint fetches its plugins from plugins.dprint.dev on first use, through the egress proxy,
+  # and one dropped tunnel failed the check as if the code were misformatted. setup.yml bakes
+  # them into the image; when they are missing anyway, the fetch gets three tries of its own.
+  #
+  # The Helm chart (deploy/) rides along: its render tests and lint, with the helm mise.toml pins
+  # (mise fetches helm from get.helm.sh, in the `mise` egress bundle). CI=1 makes a missing helm
+  # fail the check instead of skipping every chart test. It is here, in one of the shortest
+  # checks, rather than a check of its own, since every check lowers the others' guaranteed share.
+  - name: lint
+    run: >-
+      for try in 1 2 3; do bunx dprint output-resolved-config >/dev/null && break; sleep 5; done;
+      bun run fmt:check && bun run lint &&
+      mise install helm && cd deploy && bun run check && CI=1 bun run test
+    timeout: 15m
+  - name: orchestrator
+    run: >-
+      cd packages/orchestrator && bun run check && bun run guard &&
+      RYPH_TEST_DB=postgres://ryph:ryph@db:5432/ryph bun run test
+    services: [db]
+    # Its tests hold ~5 GiB at peak, far over an even share of the shared pod: a pod of its own.
+    pod: own
+    timeout: 20m
+  - name: runner
+    run: cd packages/runner && bun run check && bun run guard && bun run test
+    timeout: 20m
+  - name: forge
+    run: cd packages/forge && bun run check && bun run guard && bun run test
+    timeout: 20m
+  - name: radicle
+    run: >-
+      cd packages/radicle && bun run check && bun run guard &&
+      RYPH_TEST_DB=postgres://ryph:ryph@db:5432/ryph bun run test
+    services: [db]
+    timeout: 20m
+  - name: app
+    run: cd packages/app && bun run check && bun run test && bun run build
+    timeout: 20m
+  # each.ts hands its environment to every package it runs, so the URL reaches each one's tests,
+  # and the type checks and guards ignore it.
+  - name: rest
+    run: >-
+      bun run check &&
+      RYPH_TEST_DB=postgres://ryph:ryph@db:5432/ryph bun --no-env-file .ryph/each.ts check guard test
+      --skip orchestrator,runner,forge,radicle,app,deploy
+    services: [db]
+    timeout: 30m
+  - name: migrations
+    run: >-
+      bun run db:generate </dev/null >/tmp/db-generate.log 2>&1 ||
+      { tail -40 /tmp/db-generate.log; exit 1; };
+      drift=$(git status --porcelain --untracked-files=all -- ":(glob)packages/*/drizzle/**") ||
+      exit 1;
+      if [ -n "$drift" ]; then
+      echo "The migrations are out of step with the schemas. Run bun run db:generate and commit the result.";
+      echo "$drift"; git diff -- ":(glob)packages/*/drizzle/**"; exit 1; fi;
+      echo "The migrations match the schemas."
+    timeout: 10m

@@ -1,0 +1,20 @@
+{
+  "id": "mysql",
+  "name": "MySQL",
+  "description": "The official MySQL image. Its port opens BEFORE the server is ready, so a TCP health gate lets a run start too early — declare a setup step that waits for a real query.",
+  "docs": "https://hub.docker.com/_/mysql",
+  "versions": {
+    "9": "mysql:9@sha256:29abb0a179982e4a8928138bfc7f918af9eda64e7eeb1b1d084c1720a20159e6"
+  },
+  "defaultPort": 3306,
+  "capabilities": ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
+  "memory": "1g",
+  "env": [
+    "MYSQL_ROOT_PASSWORD",
+    "MYSQL_ALLOW_EMPTY_PASSWORD",
+    "MYSQL_RANDOM_ROOT_PASSWORD",
+    "MYSQL_DATABASE",
+    "MYSQL_USER",
+    "MYSQL_PASSWORD"
+  ]
+}

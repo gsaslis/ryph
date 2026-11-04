@@ -1,0 +1,69 @@
+{
+  "kind": "remote",
+  "id": "supabase",
+  "name": "Supabase",
+  "description": "Tables, SQL, logs and docs for one Supabase project.",
+  "docs": "https://supabase.com/docs/guides/getting-started/mcp",
+  "brand": {
+    "color": "#3FCF8E",
+    "logo": "<svg fill=\"#3FCF8E\" role=\"img\" viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><title>Supabase</title><path d=\"M11.9 1.036c-.015-.986-1.26-1.41-1.874-.637L.764 12.05C-.33 13.427.65 15.455 2.409 15.455h9.579l.113 7.51c.014.985 1.259 1.408 1.873.636l9.262-11.653c1.093-1.375.113-3.403-1.645-3.403h-9.642z\"/></svg>"
+  },
+  "defaultOff": [
+    "execute_sql",
+    "apply_migration",
+    "create_project",
+    "pause_project",
+    "restore_project",
+    "confirm_cost",
+    "create_branch",
+    "delete_branch",
+    "merge_branch",
+    "reset_branch",
+    "rebase_branch",
+    "deploy_edge_function",
+    "create_edge_function_secret",
+    "update_storage_config"
+  ],
+  "url": "https://mcp.supabase.com/mcp?project_ref={projectRef}{readOnly}{features}",
+  "settings": [
+    {
+      "key": "projectRef",
+      "label": "Project ref",
+      "kind": "text",
+      "placeholder": "abcdefghijklmnopqrst",
+      "description": "From the project's URL in the Supabase dashboard.",
+      "pattern": "^[a-z0-9]{20}$"
+    },
+    {
+      "key": "readOnly",
+      "label": "Read-only",
+      "kind": "toggle",
+      "description": "SQL runs as a read-only database user.",
+      "default": true,
+      "url": {
+        "true": "&read_only=true"
+      }
+    },
+    {
+      "key": "features",
+      "label": "Feature groups",
+      "kind": "text",
+      "placeholder": "database,docs",
+      "optional": true,
+      "description": "Comma-separated. Leave empty for Supabase's defaults.",
+      "pattern": "^[a-z]{1,20}(,[a-z]{1,20}){0,15}$",
+      "urlPrefix": "&features="
+    }
+  ],
+  "credential": {
+    "delivery": "headers",
+    "headers": {
+      "Authorization": {
+        "label": "Personal access token",
+        "secret": true,
+        "prefix": "Bearer ",
+        "placeholder": "sbp_…"
+      }
+    }
+  }
+}

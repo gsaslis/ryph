@@ -1,0 +1,187 @@
+# The perf overlay: deploy/compose-networked/compose.yaml, reshaped to a small production
+# Kubernetes install.
+#
+#   docker compose -p ryph-perf -f deploy/compose-networked/compose.yaml \
+#     -f deploy/compose-networked/compose.build.yaml -f perf/compose.perf.yaml up -d --build --wait
+#
+# (`bun run perf:up` says the same thing.) Compose resolves every relative path in this file
+# against the first file's directory, deploy/compose-networked, which is also where it reads .env.
+# Three changes, each one the production number:
+#
+# - Every service is capped at 250m of CPU: its request in the Helm chart (deploy/helm/ryph). The
+#   chart sets NO CPU limit (cpu.max is `max` inside the pods), so a pod bursts onto whatever its
+#   node has spare and 250m is only what it is guaranteed. The cap is therefore the WORST
+#   case — a node where every neighbour is busy — and PERF_CPU=0 (no cap) the best. Run both.
+# - Postgres is shaped like a small managed instance (Cloud SQL's db-g1-small): one shared core,
+#   1.7 GB, 50 connections. Plus pg_stat_statements, which is how the report names the queries.
+# - Every pool is `max=2`, the cap a small install puts in each service's database URL.
+#
+# PERF_CPU / PERF_DB_CPU / PERF_POOL widen any of the three for a "what if we scaled it" run, and
+# PERF_CP_POOL the control plane's pool alone — the one every runner's traffic goes through. Both
+# pool variables are the URL's whole query string: PERF_POOL='?max=10&idle_timeout=30'.
+#
+# One subtraction: the launcher. The driver plays every runner itself, off the bootstrap tokens the
+# manual provisioner prints, so the control plane is set back to `manual`, builds, checks and tool
+# hosting are off, and every address a run is handed names its service instead of the gate.
+#
+# And one addition: `mock-model`, an OpenAI-compatible endpoint that streams canned completions
+# with a usage block, so model calls go through the real proxy and meter real rows without a
+# provider account. It is registered as a custom endpoint, which RYPH_ALLOW_PRIVATE_MODEL_ENDPOINTS
+# permits on a private address.
+
+# Its own network, so a perf stack never holds the dev stack's `ryph`. (The tools network is a
+# launcher's to make, and this stack runs none; its name below is what `perf:down` reads.)
+networks:
+  default:
+    name: ryph-perf
+
+x-service-limits: &service-limits
+  cpus: ${PERF_CPU:-0.25}
+  mem_limit: 512m
+
+services:
+  postgres:
+    cpus: ${PERF_DB_CPU:-1}
+    mem_limit: 1740m
+    shm_size: 256m
+    command:
+      - postgres
+      - -c
+      - max_connections=50
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=4MB
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - track_io_timing=on
+      - -c
+      - log_min_duration_statement=250
+      - -c
+      - log_lock_waits=on
+
+  # Its request in the Helm chart (deploy/helm/ryph/values.yaml): the supervisor (~65-120 MB) and an artifact publish's
+  # sanitizer process of up to ~300 MB.
+  sanitizer:
+    <<: *service-limits
+  control-plane:
+    <<: *service-limits
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph${PERF_CP_POOL:-${PERF_POOL:-?max=2&idle_timeout=30}}
+      # The driver plays every runner, so nothing is launched: the manual provisioner prints each
+      # run's bootstrap token to the log, where the driver reads it. Builds and checks need a
+      # launcher, so they are off with it.
+      RYPH_PROVISIONER: manual
+      RYPH_LAUNCHER_URL: !reset null
+      RYPH_LAUNCHER_TOKEN: !reset null
+      RYPH_ENVIRONMENTS: "off"
+      RYPH_CHECKS: "off"
+      # No gate either, so every address names its service directly.
+      RYPH_PUBLIC_URL: http://control-plane:7411
+      RYPH_RUN_HISTORY_URL: http://historian:7413
+      RYPH_RUN_PREVIEWS_URL: http://previews:7491
+      RYPH_GIT_GATEWAY_URL: http://forge:7412
+      RYPH_EGRESS_PROXY_URL: http://egress-proxy:7460
+    depends_on:
+      launcher: !reset null
+  historian:
+    <<: *service-limits
+    environment:
+      RYPH_HISTORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_history${PERF_POOL:-?max=2&idle_timeout=30}
+  memory:
+    cpus: ${PERF_CPU:-0.25}
+    mem_limit: 1g
+    environment:
+      RYPH_MEMORY_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_memory${PERF_POOL:-?max=2&idle_timeout=30}
+  chat:
+    <<: *service-limits
+    environment:
+      RYPH_CHAT_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_chat${PERF_POOL:-?max=2&idle_timeout=30}
+  model-proxy:
+    <<: *service-limits
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_keys${PERF_POOL:-?max=2&idle_timeout=30}
+      RYPH_ALLOW_PRIVATE_MODEL_ENDPOINTS: "1"
+      RYPH_MODEL_PROXY_URL: http://model-proxy:7420
+    # The driver plays every agent container from the host, so the data listener is published —
+    # to loopback only, like every other port in this file.
+    ports:
+      - "127.0.0.1:7420:7420"
+  mcp-gateway:
+    <<: *service-limits
+    environment:
+      RYPH_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_mcp${PERF_POOL:-?max=2&idle_timeout=30}
+      RYPH_MCP_GATEWAY_URL: http://mcp-gateway:7430
+      # No hosted MCP servers: nothing in a scenario uses one, and hosting needs the launcher.
+      RYPH_TOOL_HOST: !reset null
+      RYPH_LAUNCHER_URL: !reset null
+      RYPH_LAUNCHER_TOOLS_TOKEN: !reset null
+    depends_on:
+      launcher: !reset null
+    ports:
+      - "127.0.0.1:7430:7430"
+  forge:
+    cpus: ${PERF_CPU:-0.25}
+    mem_limit: 1g
+    environment:
+      RYPH_FORGE_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_forge${PERF_POOL:-?max=2&idle_timeout=30}
+  automations:
+    <<: *service-limits
+    environment:
+      RYPH_AUTOMATIONS_DB: postgres://ryph:${POSTGRES_PASSWORD:?run bun run compose:init}@postgres:5432/ryph_automations${PERF_POOL:-?max=2&idle_timeout=30}
+  web:
+    <<: *service-limits
+  previews:
+    <<: *service-limits
+  app:
+    <<: *service-limits
+
+  mock-model:
+    image: oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4
+    command: ["bun", "--no-env-file", "/perf/mock_model.ts"]
+    environment:
+      MOCK_PORT: 8080
+      # Per call: time to first token, then streaming time. Tuned by the driver's scenarios.
+      MOCK_TTFT_MS: ${MOCK_TTFT_MS:-800}
+      MOCK_STREAM_MS: ${MOCK_STREAM_MS:-2000}
+    volumes:
+      - ../../perf/mock_model.ts:/perf/mock_model.ts:ro
+    healthcheck:
+      test: [
+        "CMD",
+        "bun",
+        "--no-env-file",
+        "-e",
+        "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+      ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # The launcher and the images it starts stay out: nothing here is launched (see control-plane).
+  # A profile nobody enables keeps `perf:up` from starting, building or pulling them.
+  # Its names follow the networks above all the same, which is what `perf:down` reads to find what
+  # a launcher would have started for this project.
+  launcher:
+    profiles: [launcher]
+    environment:
+      RYPH_DOCKER_NETWORK: ryph-perf
+      RYPH_DOCKER_RUN_NETWORK: ryph-runs-ryph-perf
+      RYPH_TOOL_NETWORK: ryph-tools-ryph-perf
+  ryph-agent:
+    profiles: [launcher]
+  ryph-run-gate:
+    profiles: [launcher]
+  ryph-tool-guard:
+    profiles: [launcher]
+  ryph-universal:
+    profiles: [launcher]
+  ryph-harness:
+    profiles: [launcher]

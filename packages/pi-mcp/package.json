@@ -1,0 +1,21 @@
+{
+  "name": "@ryph/pi-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The ryph MCP extension for pi: connects a run to its MCP gateway endpoints and registers the tools they list.",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "devDependencies": {
+    "@std/assert": "npm:@jsr/std__assert@1"
+  }
+}

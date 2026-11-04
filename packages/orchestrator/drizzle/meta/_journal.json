@@ -1,0 +1,454 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789292875931,
+      "tag": "0000_steady_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789396265285,
+      "tag": "0001_abandoned_ted_forrester",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789399978892,
+      "tag": "0002_fat_lizard",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789400010028,
+      "tag": "0003_young_susan_delgado",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789462922566,
+      "tag": "0004_lowly_meltdown",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789474513121,
+      "tag": "0005_icy_thaddeus_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789474526974,
+      "tag": "0006_silent_mongu",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789483944309,
+      "tag": "0007_dry_proemial_gods",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789485731752,
+      "tag": "0008_regular_mongu",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789485731753,
+      "tag": "0009_one_open_response",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789501654601,
+      "tag": "0010_tricky_steel_serpent",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789549039948,
+      "tag": "0011_steady_jack_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789551544662,
+      "tag": "0012_curvy_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789573146705,
+      "tag": "0013_faulty_radioactive_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789638816916,
+      "tag": "0014_fancy_slayback",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789658404917,
+      "tag": "0015_fuzzy_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789658411341,
+      "tag": "0016_futuristic_colleen_wing",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789669822304,
+      "tag": "0017_radicle_repo_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789746869474,
+      "tag": "0018_chat_commands",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789750209582,
+      "tag": "0019_chat_requested_via",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789911700719,
+      "tag": "0020_environments",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789937360040,
+      "tag": "0021_egress_refusals",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789980925245,
+      "tag": "0022_run_launched_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790004750062,
+      "tag": "0023_reflective_dexter_bennett",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790173285262,
+      "tag": "0024_run_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790348315635,
+      "tag": "0025_roles-four-values",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790352552267,
+      "tag": "0026_scope-and-api-tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790772427009,
+      "tag": "0027_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790871144570,
+      "tag": "0028_checks_by_time",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790887747101,
+      "tag": "0029_checks_inherited",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790938623856,
+      "tag": "0030_checks_change_requests_and_local_asks",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791039671372,
+      "tag": "0031_reserved_capacity",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791116945965,
+      "tag": "0032_agents_can_open_patches",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791132142172,
+      "tag": "0033_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791150251035,
+      "tag": "0034_run_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1791189916884,
+      "tag": "0035_agents_browser_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791200720003,
+      "tag": "0036_run_attachments_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791288226000,
+      "tag": "0037_environment_definition",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791299280755,
+      "tag": "0038_nappy_starbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791312920137,
+      "tag": "0039_run_background_commands",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791363737909,
+      "tag": "0040_patch_hook_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791369378733,
+      "tag": "0041_check_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791372210518,
+      "tag": "0042_landings",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791378631203,
+      "tag": "0043_merge_polls",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791386672005,
+      "tag": "0044_every_run_conversational",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791387189570,
+      "tag": "0045_task_awaiting_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791488163299,
+      "tag": "0046_graceful_black_tom",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791491942825,
+      "tag": "0047_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791501238209,
+      "tag": "0048_narrow_cable",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1791559291233,
+      "tag": "0049_perpetual_madame_hydra",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791564755819,
+      "tag": "0050_environment_images_removed",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791819134100,
+      "tag": "0051_run_finish_facts",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1791835557663,
+      "tag": "0052_environment_machine_image",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1791850076901,
+      "tag": "0053_change_request_merges",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1791850096980,
+      "tag": "0054_merge_record_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791887608087,
+      "tag": "0055_environment_setup_warnings",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1791900548700,
+      "tag": "0056_light_harry_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1791918814926,
+      "tag": "0057_connected_repos_allow_fork_pushes",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1791928339345,
+      "tag": "0058_response_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1791931242776,
+      "tag": "0059_patch_lines",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791982113363,
+      "tag": "0060_gitlab_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792573373708,
+      "tag": "0061_response_conversation",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1793308470870,
+      "tag": "0062_check_pods",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1793792387251,
+      "tag": "0063_drop_cancel_url",
+      "breakpoints": true
+    }
+  ]
+}

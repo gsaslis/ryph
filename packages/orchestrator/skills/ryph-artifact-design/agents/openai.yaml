@@ -1,0 +1,5 @@
+interface:
+  display_name: "Artifacts"
+  short_description: "Design and publish a single-page HTML report everyone on the instance can open."
+  icon_small: "./assets/artifact.svg"
+  icon_large: "./assets/artifact.svg"

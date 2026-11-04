@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "responses_one_open" ON "responses" USING btree ("automation_id") WHERE "state" <> 'closed';

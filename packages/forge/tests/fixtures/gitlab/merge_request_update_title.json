@@ -1,0 +1,153 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {
+    "id": 31,
+    "name": "Ada Lovelace",
+    "username": "ada.lovelace",
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/31/avatar.png",
+    "email": "[REDACTED]"
+  },
+  "project": {
+    "id": 4211,
+    "name": "app",
+    "description": "The app",
+    "web_url": "https://gitlab.example.com/acme/platform/app",
+    "avatar_url": null,
+    "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+    "namespace": "platform",
+    "visibility_level": 0,
+    "path_with_namespace": "acme/platform/app",
+    "default_branch": "main",
+    "ci_config_path": null,
+    "homepage": "https://gitlab.example.com/acme/platform/app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+    "http_url": "https://gitlab.example.com/acme/platform/app.git"
+  },
+  "object_attributes": {
+    "assignee_id": null,
+    "author_id": 57,
+    "created_at": "2026-10-14 09:00:00 UTC",
+    "description": "Retries once.",
+    "draft": false,
+    "head_pipeline_id": null,
+    "id": 77001,
+    "iid": 7,
+    "last_edited_at": null,
+    "last_edited_by_id": null,
+    "merge_commit_sha": null,
+    "merge_error": null,
+    "merge_params": {
+      "force_remove_source_branch": true
+    },
+    "merge_status": "can_be_merged",
+    "merge_user_id": null,
+    "merge_when_pipeline_succeeds": false,
+    "milestone_id": null,
+    "source_branch": "retry-once",
+    "source_project_id": 4211,
+    "state_id": 1,
+    "target_branch": "main",
+    "target_project_id": 4211,
+    "time_estimate": 0,
+    "title": "Retry the upload once",
+    "updated_at": "2026-10-14 09:20:01 UTC",
+    "updated_by_id": null,
+    "prepared_at": "2026-10-14 07:58:44 UTC",
+    "assignee_ids": [],
+    "blocking_discussions_resolved": true,
+    "detailed_merge_status": "mergeable",
+    "first_contribution": false,
+    "human_time_change": null,
+    "human_time_estimate": null,
+    "human_total_time_spent": null,
+    "labels": [],
+    "last_commit": {
+      "id": "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+      "message": "Retry the upload once\n",
+      "title": "Retry the upload once",
+      "timestamp": "2026-10-14T09:12:43+00:00",
+      "url": "https://gitlab.example.com/acme/platform/app/-/commit/da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
+      "author": {
+        "name": "Grace Hopper",
+        "email": "grace@example.com"
+      }
+    },
+    "reviewer_ids": [],
+    "source": {
+      "id": 4211,
+      "name": "app",
+      "description": "The app",
+      "web_url": "https://gitlab.example.com/acme/platform/app",
+      "avatar_url": null,
+      "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+      "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+      "namespace": "platform",
+      "visibility_level": 0,
+      "path_with_namespace": "acme/platform/app",
+      "default_branch": "main",
+      "ci_config_path": null,
+      "homepage": "https://gitlab.example.com/acme/platform/app",
+      "url": "git@gitlab.example.com:acme/platform/app.git",
+      "ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+      "http_url": "https://gitlab.example.com/acme/platform/app.git"
+    },
+    "state": "opened",
+    "target": {
+      "id": 4211,
+      "name": "app",
+      "description": "The app",
+      "web_url": "https://gitlab.example.com/acme/platform/app",
+      "avatar_url": null,
+      "git_ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+      "git_http_url": "https://gitlab.example.com/acme/platform/app.git",
+      "namespace": "platform",
+      "visibility_level": 0,
+      "path_with_namespace": "acme/platform/app",
+      "default_branch": "main",
+      "ci_config_path": null,
+      "homepage": "https://gitlab.example.com/acme/platform/app",
+      "url": "git@gitlab.example.com:acme/platform/app.git",
+      "ssh_url": "git@gitlab.example.com:acme/platform/app.git",
+      "http_url": "https://gitlab.example.com/acme/platform/app.git"
+    },
+    "time_change": 0,
+    "total_time_spent": 0,
+    "url": "https://gitlab.example.com/acme/platform/app/-/merge_requests/7",
+    "work_in_progress": false,
+    "action": "update"
+  },
+  "labels": [],
+  "changes": {
+    "title": {
+      "previous": "Draft: Retry",
+      "current": "Retry the upload once"
+    },
+    "updated_at": {
+      "previous": "2026-10-14 08:00:57 UTC",
+      "current": "2026-10-14 08:06:04 UTC"
+    },
+    "updated_by_id": {
+      "previous": null,
+      "current": 2
+    }
+  },
+  "repository": {
+    "name": "app",
+    "url": "git@gitlab.example.com:acme/platform/app.git",
+    "description": "The app",
+    "homepage": "https://gitlab.example.com/acme/platform/app"
+  },
+  "assignees": [],
+  "reviewers": [
+    {
+      "id": 31,
+      "name": "Ada Lovelace",
+      "username": "ada.lovelace",
+      "state": "unreviewed",
+      "avatar_url": null
+    }
+  ]
+}

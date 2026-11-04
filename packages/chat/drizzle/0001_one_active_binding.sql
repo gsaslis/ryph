@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "chat_bindings_one_active" ON "chat_bindings" USING btree ("chatroom_id") WHERE "state" = 'active';

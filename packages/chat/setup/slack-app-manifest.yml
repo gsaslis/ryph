@@ -1,0 +1,57 @@
+# A Slack app with exactly what a ryph room needs, and nothing more. Paste it into
+# https://api.slack.com/apps → Create New App → From an app manifest, pick the workspace, and
+# create. Then install it, and copy the two tokens a room is created with: the BOT token
+# (`xoxb-…`, OAuth & Permissions) and an APP-LEVEL token (`xapp-…`, Basic Information → App-Level
+# Tokens, with `connections:write`).
+#
+# Socket Mode is on and there is no request URL anywhere, because this service has no public
+# ingress: the app's events arrive down a WebSocket it opens itself.
+#
+# The scopes, and why each one is here:
+#   app_mentions:read   hear a mention — the only thing that ever reaches the service
+#   chat:write          post as the bot: the opening line, what a run says, the closing line
+#   reactions:write     acknowledge a mention with 👀 while the run starts
+#   channels:read       read a public channel's name and whether it is private
+#   groups:read         the same for a private channel the bot is in
+#   channels:history    read the thread a mention sits in, as the run's evidence
+#   groups:history      the same in a private channel
+#   users:read          name the person who mentioned the bot, and tell a bot from a person
+#   usergroups:read     check a commander policy against a usergroup's members (a paid plan)
+#   files:read          download the images a mention carries, so the run can see them
+#   files:write         upload the images a run posts into its thread (without it they go as
+#                       links to ryph)
+#
+# The bot must still be INVITED to every channel it serves, public or private: Slack delivers an
+# `app_mention` only from a conversation the app is in, and nothing else said there ever reaches
+# this process.
+display_information:
+  name: ryph
+  description: Runs agents from your response and command channels.
+  background_color: "#1f2226"
+features:
+  bot_user:
+    display_name: ryph
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - reactions:write
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history
+      - users:read
+      - usergroups:read
+      - files:read
+      - files:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

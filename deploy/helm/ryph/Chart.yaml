@@ -1,0 +1,21 @@
+apiVersion: v2
+name: ryph
+description: >-
+  ryph on Kubernetes: the control plane, its services, and the namespaces, RBAC and
+  NetworkPolicies that keep agent runs, hosted MCP servers, environment builds and the egress
+  proxy apart from them.
+type: application
+# The chart's version and the image tag every ryph image defaults to: both are the release's
+# version, set together by `bun run release:version --stamp <x.y.z>` before the release is tagged
+# (packages/ryph/scripts/version.ts; the release scripts refuse a tag this file does not match).
+# The chart is not packaged or pushed to a chart repository; it is installed from a checkout.
+version: 0.1.0
+appVersion: "0.1.0"
+# Native sidecars (restartPolicy: Always on an init container) are on by default from 1.29.
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/ryph-hq/ryph
+sources:
+  - https://github.com/ryph-hq/ryph
+keywords:
+  - agents
+  - ryph

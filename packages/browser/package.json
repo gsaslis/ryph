@@ -1,0 +1,32 @@
+{
+  "name": "@ryph/browser",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "bun --no-env-file src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 120000 tests/",
+    "check": "tsgo -p .",
+    "guard": "bun --no-env-file scripts/check_architecture.ts",
+    "install-shell": "bunx playwright-core install chromium-headless-shell",
+    "ci": "bun run check && bun run guard && bun run test"
+  },
+  "dependencies": {
+    "@ryph/logger": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@std/cli": "npm:@jsr/std__cli@1",
+    "@std/path": "npm:@jsr/std__path@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "playwright-core": "1.63.0",
+    "@ryph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@ryph/historian": "workspace:*"
+  }
+}

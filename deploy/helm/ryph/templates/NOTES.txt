@@ -1,0 +1,83 @@
+ryph {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}".
+
+  services   {{ include "ryph.ns.services" . }}
+  runs       {{ include "ryph.ns.runs" . }}
+  tools      {{ include "ryph.ns.tools" . }}
+  builds     {{ include "ryph.ns.builds" . }}
+  egress     {{ include "ryph.ns.egress" . }}
+{{- if .Values.devState.enabled }}
+  dev state  {{ include "ryph.ns.state" . }}
+{{- end }}
+
+Watch it come up (each service first applies its own schema migrations, in an init container):
+
+  kubectl -n {{ include "ryph.ns.services" . }} get pods -w
+
+Reach the app:
+{{- if and .Values.ingress.enabled .Values.ingress.host }}
+  {{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}  (Ingress "ryph")
+{{- else if .Values.httpRoute.enabled }}
+  {{ .Values.appUrl }}  (HTTPRoute "ryph" on {{ range .Values.httpRoute.parentRefs }}{{ .namespace | default (include "ryph.ns.services" $) }}/{{ .name }} {{ end }})
+{{- else }}
+  kubectl -n {{ include "ryph.ns.services" . }} port-forward svc/app 3000
+  then open {{ .Values.appUrl }}
+{{- end }}
+{{- if .Values.previews.enabled }}
+
+Previews are served on *.{{ .Values.previews.domain }} (the previews Service's public port, 7490).
+{{- if and (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) }}
+  kubectl -n {{ include "ryph.ns.services" . }} port-forward svc/previews 7490
+{{- end }}
+{{- end }}
+
+The first account registered becomes the only admin. A fresh control plane logs a setup token for
+that registration:
+
+  kubectl -n {{ include "ryph.ns.services" . }} logs deploy/control-plane -c control-plane | grep "Setup token"
+
+IMPORTANT: the security boundary between agent runs and everything else is a set of
+NetworkPolicies. They only mean something on a cluster whose network plugin ENFORCES them
+(README.md, "Requirements"). On one that does not, every run can reach the database, the services'
+control listeners and the cloud metadata server.
+{{- if and (include "ryph.routesHooks" .) (not .Values.networkPolicy.frontDoor.from) }}
+
+WARNING: the front door routes /v1/hooks/ to the forge and the automations service, but
+networkPolicy.frontDoor.from is empty, so their NetworkPolicies admit nothing from outside the
+cluster: GitHub and GitLab webhooks and automation hooks will time out. Set it to your load
+balancer's ranges or your ingress controller's namespace.
+{{- end }}
+{{- if .Values.secrets.allowDevSecrets }}
+
+WARNING: DEV MODE. secrets.allowDevSecrets lets every service boot with the public placeholder
+secrets committed to the ryph repository. Never expose this install.
+{{- end }}
+{{- if .Values.devState.enabled }}
+
+WARNING: devState is on — Postgres and SeaweedFS in {{ include "ryph.ns.state" . }} with fixed
+credentials, on one small volume each, with no backups. Laptop clusters only.
+{{- end }}
+{{- if not .Values.runs.runtimeClassName }}
+
+Note: runs.runtimeClassName is empty, so agent runs share the node's kernel. A sandboxing runtime
+(gVisor) is strongly recommended wherever untrusted repositories or models run.
+{{- end }}
+{{- if and .Values.environments.enabled (eq (.Values.environments.builder | default "kubernetes") "kubernetes") (not (.Values.environments.runtimeClassName | default .Values.runs.runtimeClassName)) }}
+
+WARNING: environments.allowUnsandboxed is on, so environment builds run in
+{{ include "ryph.ns.builds" . }} with no runtimeClassName (environments.runtimeClassName, else
+runs.runtimeClassName). BuildKit there executes repositories' Dockerfiles and setup.yml with seccomp
+and AppArmor unconfined, on the node's own kernel: a kernel bug in a RUN step is the node. Laptop
+clusters only; anywhere else, install gVisor and set the runtime class.
+{{- end }}
+{{- if not .Values.tools.runtimeClassName }}
+
+Note: tools.runtimeClassName is empty, so hosted MCP servers (vendors' containers) share the
+node's kernel. A sandboxing runtime (gVisor) is recommended for them too.
+{{- end }}
+{{- if and .Values.secrets.generate (not .Values.devState.enabled) }}
+
+Internal credentials this chart generated are kept in the cluster and reused on upgrade. Back up
+RYPH_SECRETS_KEY, RYPH_MCP_KEY and RYPH_CHAT_KEY: what they seal is lost with them. A render without
+cluster access (helm template, Argo CD) cannot see them and refuses to mint new ones: see
+README.md, "Secrets".
+{{- end }}

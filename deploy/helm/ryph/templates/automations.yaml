@@ -1,0 +1,128 @@
+{{- /*
+The automations service: user-created webhook and cron triggers, on their own database, with the
+mailroom mounted inside for ingestion.
+
+ONE replica, replaced rather than rolled. The mailroom's registry is in memory and synced from the
+table per process, and the scheduler seats itself once per process — two pods at once, even for the
+seconds a rolling update overlaps them, is two registries and two schedulers. Recreate means a deploy
+is a few seconds of no ingestion, which the sender's retry covers; the alternative is a fire
+delivered twice. Hence no `replicas` value.
+*/ -}}
+{{- $v := .Values.automations -}}
+{{- $image := include "ryph.image" (list . .Values.images.automations) -}}
+{{- $secret := include "ryph.secretName" (list . "automations") -}}
+{{- $env := include "ryph.automations.env" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: automations
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "automations") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: automations
+  template:
+    metadata:
+      labels:
+        {{- include "ryph.podLabels" "automations" | nindent 8 }}
+      {{- with (include "ryph.podAnnotations" (list . $v (include "ryph.secretChecksum" (list . "automations"))) | trim) }}{{ . | nindent 6 }}{{ end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The pre-stop pause (30s) plus the drain deadline (25s), with a margin.
+      terminationGracePeriodSeconds: 65
+      {{- with (include "ryph.imagePullSecrets" . | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- with (include "ryph.scheduling" (list . $v) | trim) }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1994
+        runAsGroup: 1994
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # /tmp, the one place the read-only root lets the runtime write.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if .Values.migrations.enabled }}
+        {{- include "ryph.migrate.volume" . | nindent 8 }}
+      initContainers:
+        {{- /* Its tables plus the mailroom's hooks table; creates the database first when missing. */}}
+        {{- include "ryph.migrate.init" (dict "root" . "image" $image "name" "migrate" "workingDir" "/app/packages/automations" "variable" "RYPH_AUTOMATIONS_DB" "owner" "automations" "secret" $secret "key" "RYPH_AUTOMATIONS_DB" "ensure" true) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: automations
+          image: {{ $image }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7414
+          env:
+            {{- include "ryph.env" (list $env $v.extraEnv) | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ $secret }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: automations
+  namespace: {{ include "ryph.ns.services" . }}
+  labels:
+    {{- include "ryph.labels" (list . "automations") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: automations
+  ports:
+    - name: http
+      port: 7414
+      targetPort: http
+
+{{- define "ryph.automations.env" -}}
+- name: RYPH_AUTOMATIONS_PORT
+  value: "7414"
+- name: RYPH_LOG_FORMAT
+  value: json
+# Keep serving this long after SIGTERM: a load balancer that addresses pods directly takes tens of
+# seconds to stop sending to a stopping one.
+- name: RYPH_PRE_STOP_MS
+  value: "30000"
+# Fires become tasks at the control plane's events door; CRUD verifies user bearers against the
+# JWKS the same process serves.
+- name: RYPH_ORCHESTRATOR_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+- name: RYPH_AUTH_URL
+  value: {{ include "ryph.url" (list . "control-plane" "services" 7411) }}
+# A response's chatroom is checked on save, with the caller's own bearer on the chat service.
+- name: RYPH_CHAT_URL
+  value: {{ include "ryph.url" (list . "chat" "services" 7450) }}
+{{- include "ryph.db.secretEnv" (list . "automations" "RYPH_AUTOMATIONS_DB") }}
+{{- end -}}

@@ -1,0 +1,1 @@
+ALTER TABLE "memory_changes" ADD COLUMN "carries" jsonb DEFAULT '[]'::jsonb NOT NULL;

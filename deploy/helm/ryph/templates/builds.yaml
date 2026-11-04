@@ -1,0 +1,111 @@
+{{- /*
+An in-cluster build runs a repo's Dockerfile and setup.yml — a branch's, which an agent may have
+written — under rootless BuildKit with seccomp and AppArmor unconfined, so its runtime class is the
+one boundary it has. None is refused unless an operator says, in so many words, that the node's
+kernel may be that boundary (a laptop cluster's). The control plane refuses the same at boot.
+*/ -}}
+{{- $e := .Values.environments -}}
+{{- if and $e.enabled (eq ($e.builder | default "kubernetes") "kubernetes") (not ($e.runtimeClassName | default .Values.runs.runtimeClassName)) (not $e.allowUnsandboxed) }}
+{{- fail "environments.enabled with the kubernetes builder needs a sandboxing RuntimeClass for build pods (environments.runtimeClassName, else runs.runtimeClassName; gvisor, say): a build runs repositories' Dockerfiles with seccomp and AppArmor unconfined, and without one that is on the node's own kernel. Install gVisor (README.md, \"Requirements\") or, on a laptop cluster only, set environments.allowUnsandboxed=true." }}
+{{- end }}
+{{- /*
+What the control plane may do in the builds namespace, and who a build is while it runs.
+packages/orchestrator/docs/environment-builders.md explains the builder.
+
+The build pods' identities, one per kind of ref. Neither's API token is ever mounted (the builder
+sets automountServiceAccountToken: false on every pod). Each exists for one thing: a cloud identity
+(`environments.builderServiceAccount.annotations`) that may push to its own registry.
+
+Two, because a RUN step in a build can reach its pod's token (the rootless worker has no process
+sandbox). A default-branch build runs as `ryph-builder`, which may write the environments registry
+where the default branches' images and every layer cache live. A branch build runs as
+`ryph-branch-builder`, which may only read that one and write the branch registry, so no branch can
+poison what a default-branch build or another branch reads.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ryph-builder
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with .Values.environments.builderServiceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ryph-branch-builder
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+  {{- with .Values.environments.branchBuilderServiceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ryph-environment-builder
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+rules:
+  # One Job per build: created suspended, released with a patch, watched until it finishes, and
+  # deleted once its log is read, whatever the outcome.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  # create only: the build's git credential and egress claim, written once, owned by the Job.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  # The build pod's state and its log are the build's record: read after it finishes, and before a
+  # timed-out one is deleted, because nothing else keeps them.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ryph-environment-builder
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ryph-environment-builder
+subjects:
+  - kind: ServiceAccount
+    name: control-plane
+    namespace: {{ include "ryph.ns.services" . }}
+---
+# A ceiling on what builds may hold at once. RYPH_ENV_BUILD_CONCURRENCY (default 2) is the control
+# plane's own limit; this is the cluster's. A build's work volume is a PersistentVolumeClaim that
+# lives as long as the pod, and a finished pod counts against `persistentvolumeclaims` and
+# `requests.storage` exactly like a running one, so the control plane deletes every Job as soon as
+# the build's row is written; ttlSecondsAfterFinished (an hour) is the window in which a control
+# plane that died mid-build can come back and adopt it. The defaults are sized for the default
+# build size and a concurrency of 2: raise `requests.storage` with either.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: builds
+  namespace: {{ include "ryph.ns.builds" . }}
+  labels:
+    {{- include "ryph.labels.plain" . | nindent 4 }}
+spec:
+  hard:
+    {{- range $k, $v := .Values.environments.quota }}
+    {{ $k }}: {{ $v | toString | quote }}
+    {{- end }}

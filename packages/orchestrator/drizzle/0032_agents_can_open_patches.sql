@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "can_open_patches" boolean DEFAULT true NOT NULL;

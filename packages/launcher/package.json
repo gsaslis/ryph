@@ -1,0 +1,25 @@
+{
+  "name": "@ryph/launcher",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "bun --env-file=.env src/main.ts",
+    "test": "bun test --no-env-file --parallel --timeout 60000 tests/",
+    "check": "tsgo -p .",
+    "ci": "bun run check && bun run test"
+  },
+  "dependencies": {
+    "@ryph/logger": "workspace:*",
+    "@ryph/mcp-gateway": "workspace:*",
+    "@ryph/orchestrator": "workspace:*",
+    "@ryph/sealed": "workspace:*",
+    "@ryph/service": "workspace:*",
+    "@std/assert": "npm:@jsr/std__assert@1",
+    "@zod/zod": "npm:@jsr/zod__zod@^4.4.3",
+    "@ryph/shared": "workspace:*"
+  }
+}
