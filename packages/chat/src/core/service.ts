@@ -41,6 +41,7 @@ import {
   type ChatMentionVerdict,
   type Chatroom,
   type ChatroomKind,
+  type ChatThread,
   CLOSING_SUMMARY_CHARS,
   type CommanderVerdict,
   type ContinuedThreadFetch,
@@ -1279,7 +1280,9 @@ export function makeChatService(deps: ChatServiceDeps): ChatService {
       if (room === null) return { kind: "gone" };
       try {
         const thread = await transportOf(room).fetchThread(await platformOf(room), threadKey);
-        return thread === null ? { kind: "gone" } : { kind: "thread", thread };
+        return thread === null
+          ? { kind: "gone" }
+          : { kind: "thread", thread: unsignThread(thread, room.botId) };
       } catch (err) {
         diag.warn("chat.thread_fetch_failed", { chatroomId, threadKey, err: String(err) });
         return { kind: "unavailable" };
@@ -1298,7 +1301,9 @@ export function makeChatService(deps: ChatServiceDeps): ChatService {
           return { kind: "none" };
         }
         const thread = await transportOf(room).fetchThread(platform, previous.threadKey);
-        return thread === null ? { kind: "none" } : { kind: "thread", thread, botId: room.botId };
+        return thread === null
+          ? { kind: "none" }
+          : { kind: "thread", thread: unsignThread(thread, room.botId), botId: room.botId };
       } catch (err) {
         diag.warn("chat.continued_thread_fetch_failed", {
           chatroomId,
@@ -1734,8 +1739,59 @@ export function signPost(agentName: string, text: string): string {
   const prefix = attributionPrefix(agentName);
   return text
     .split("\n")
-    .map((line, i) => (i === 0 || SPEAKER_LOOKALIKE.test(line) ? prefix + line : line))
+    .map((line, i) =>
+      i === 0
+        ? prefix + withoutOwnPrefix(agentName, line)
+        : SPEAKER_LOOKALIKE.test(line)
+        ? prefix + line
+        : line
+    )
     .join("\n");
+}
+
+/**
+ * A line with the agent's own attribution taken off its front, however many times it is there.
+ * An agent that reads its earlier posts back sees them signed and starts its own text with the
+ * name too; signing that again posted `[Drippy] [Drippy] …`.
+ */
+function withoutOwnPrefix(agentName: string, line: string): string {
+  const prefix = attributionPrefix(agentName);
+  let rest = line.trimStart();
+  while (rest.startsWith(prefix)) rest = rest.slice(prefix.length).trimStart();
+  return rest;
+}
+
+/** A signed post's leading attribution: the agent's name and the text after it. */
+const SIGNED_LINE = /^\[([^\]\n]+)\] /;
+
+/**
+ * A thread as an agent reads it: the bot's own posts unsigned, the agent that wrote each named as
+ * its sender instead. Shown signed, the agent took `[Name] ` for part of how it writes and
+ * signed its next post itself, on top of the platform's signature. The re-attributed later lines
+ * `signPost` writes lose their name the same way.
+ */
+export function unsignThread(thread: ChatThread, botId: string): ChatThread {
+  return {
+    ...thread,
+    messages: thread.messages.map((message) => {
+      if (message.sender.id !== botId) return message;
+      const signed = SIGNED_LINE.exec(message.text);
+      if (signed === null) return message;
+      const name = signed[1];
+      const prefix = attributionPrefix(name);
+      const text = message.text
+        .split("\n")
+        .map((line, i) =>
+          i === 0
+            ? withoutOwnPrefix(name, line)
+            : line.startsWith(prefix) && SPEAKER_LOOKALIKE.test(line.slice(prefix.length))
+            ? line.slice(prefix.length)
+            : line
+        )
+        .join("\n");
+      return { ...message, sender: { ...message.sender, name }, text };
+    }),
+  };
 }
 
 /** A line that opens like an attribution: `[Alice] …`, whatever the spacing before it. */

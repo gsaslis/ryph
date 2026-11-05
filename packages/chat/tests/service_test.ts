@@ -19,7 +19,9 @@ import {
   closingLine,
   DOOR_DOWN_REPLY,
   openingLine,
+  signPost,
   splitPost,
+  unsignThread,
 } from "../src/core/service.ts";
 import { CLOSING_SUMMARY_CHARS, TELEGRAM_MAX_POST_CHARS } from "../src/core/types.ts";
 import { bindRun, linkRoom, makeApi, makeRoom, makeZulipRoom } from "./api.ts";
@@ -780,4 +782,49 @@ test("an alert block pretty-prints JSON, keeps its fence shut, and cuts a long p
   const long = alertBlock("zulip", { title: null, payload: "x".repeat(ALERT_EXCERPT_MAX + 10) });
   assertStringIncludes(long, "x".repeat(ALERT_EXCERPT_MAX) + "\n```\n…cut short");
   assert(!long.includes("x".repeat(ALERT_EXCERPT_MAX + 1)));
+});
+
+test("an agent that signs its own post is signed once", () => {
+  assertEquals(signPost("Drippy", "[Drippy] Andrea: yes."), "[Drippy] Andrea: yes.");
+  assertEquals(signPost("Drippy", "[Drippy] [Drippy] Andrea: yes."), "[Drippy] Andrea: yes.");
+  // Another speaker's name is still kept under the agent's own.
+  assertEquals(signPost("Drippy", "[Alice] ship it"), "[Drippy] [Alice] ship it");
+});
+
+test("a thread read back shows the bot's posts unsigned, named for the agent that wrote them", () => {
+  const at = "2026-11-05T11:00:00.000Z";
+  const thread = {
+    channel: { id: "c", name: "ops", visibility: "public" as const },
+    topic: null,
+    truncated: false,
+    historyLimited: false,
+    messages: [
+      {
+        id: "1",
+        sender: { id: "u", name: "Andrea" },
+        text: "[Drippy] ok?",
+        sentAt: at,
+        hasAttachment: false,
+      },
+      {
+        id: "2",
+        sender: { id: "bot", name: "Ryph" },
+        text: signPost("Drippy", "Andrea: yes.\n[Alice] said so\n[1] a note"),
+        sentAt: at,
+        hasAttachment: false,
+      },
+      {
+        id: "3",
+        sender: { id: "bot", name: "Ryph" },
+        text: "Response opened.",
+        sentAt: at,
+        hasAttachment: false,
+      },
+    ],
+  };
+  const read = unsignThread(thread, "bot").messages;
+  assertEquals(read[0].text, "[Drippy] ok?");
+  assertEquals(read[1].sender, { id: "bot", name: "Drippy" });
+  assertEquals(read[1].text, "Andrea: yes.\n[Alice] said so\n[1] a note");
+  assertEquals(read[2], thread.messages[2]);
 });
