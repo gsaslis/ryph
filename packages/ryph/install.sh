@@ -77,8 +77,13 @@ main() {
     [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
     arch=arm64
   fi
-  if [ "$os" = linux ] && ls /lib/ld-musl-* >/dev/null 2>&1; then
-    fail "this looks like a musl system (Alpine?): ryph needs glibc"
+  if [ "$os" = linux ]; then
+    case "$arch" in
+      arm64) loader=/lib/ld-linux-aarch64.so.1 ;;
+      x64) loader=/lib64/ld-linux-x86-64.so.2 ;;
+    esac
+    [ -e "$loader" ] ||
+      fail "no glibc loader at $loader (Alpine or another musl system?): ryph needs glibc"
   fi
 
   version="${RYPH_VERSION:-latest}"
